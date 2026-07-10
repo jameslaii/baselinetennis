@@ -34,6 +34,20 @@ backend/pipeline/            analysis code vendored from the tennis-coach deskto
   flattered the averages; v2 grades every matching swing (evenly time-spaced
   subset if >30) and reports typical-vs-best.
 
+## v3 metrics (SwingVision-inspired, pose-honest)
+
+- **Hand speed (km/h)** — peak dominant-wrist speed around contact from MediaPipe
+  *world* landmarks (metric, hip-origin). Adjacent-pair smoothed, 5–60 km/h sanity
+  band. Labelled honestly as *hand* speed (racket head runs ~1.5–2× faster).
+- **Contact out front (cm)** — wrist offset from the hip centre at contact,
+  projected on the horizontal swing direction. ≥15 cm good / 0–15 close / <0 behind.
+- **Consistency + trend** — score std-dev rating (machine-like / steady / streaky)
+  and first-third vs last-third fade line.
+- **This Week plan** — top-2 measured issues with drills, plus a filming tip
+  derived from the job's warnings.
+- **Progress strip** — home screen sparkline of avg swing score across past
+  sessions (localStorage), with hand-speed and knee deltas vs the previous session.
+
 ## Deploying
 
 Frontend (from the repo root):

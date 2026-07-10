@@ -376,6 +376,7 @@ def analyze(job_id: str, params: dict):
 
         stage("grading", 92)
         results, swings, dropped = [], [], 0
+        speeds, fronts = [], []
         by_frame = {s["contact_frame"]: s for s, _ in selected}
         for c in contacts:
             try:
@@ -386,6 +387,11 @@ def analyze(job_id: str, params: dict):
             results.append(a)
             s = by_frame[c]
             path = grading.hand_path_points(a, hf, nn, W, H)
+            speed = grading.swing_speed_kmh(a, hf, ww, fps)
+            front = grading.contact_front_cm(a, hf, ww)
+            speeds.append(speed)
+            fronts.append(front)
+            fverd = grading.front_verdict(front)
             swings.append({
                 "idx": len(results),
                 "contact_frame": int(a["contact"]),
@@ -402,6 +408,9 @@ def analyze(job_id: str, params: dict):
                 },
                 "overall": {"label": a["overall"][0], "grade": a["overall"][1],
                             "score": round(grading.score_of(a), 2), "note": a["note"]},
+                "hand_speed_kmh": speed,
+                "contact_front_cm": front,
+                "contact_front": ({"label": fverd[0], "grade": fverd[1]} if fverd else None),
                 "hand_path": path,
                 "skeleton": grading.skeleton_frames(a, hf, nn),
             })
@@ -412,7 +421,8 @@ def analyze(job_id: str, params: dict):
 
         # ---- 6. aggregate ---------------------------------------------------
         stage("aggregating", 96)
-        agg = grading.aggregate(results, grading.REF_NAME, ref_knee)
+        agg = grading.aggregate(results, grading.REF_NAME, ref_knee,
+                                speeds=speeds, fronts=fronts)
         payload = {
             "schema_version": 2,
             "job_id": job_id,

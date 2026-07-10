@@ -231,6 +231,82 @@ def wing_of(contact: int, norm: np.ndarray, fps: float, W: int, H: int) -> str:
     return "ambiguous"
 
 
+def swing_speed_kmh(a: dict, hf: dict, ww: np.ndarray, fps: float) -> float | None:
+    """Peak dominant-hand speed (km/h) around contact, from METRIC world landmarks.
+
+    Honest hand speed, not racket-head speed (which runs ~1.5-2x higher) — same
+    measurement the desktop highlight reel ships. Adjacent-pair averaging kills
+    single-frame pose spikes without clipping the genuine 2-4 frame whip the way
+    median-of-3 does at 60fps (validated on the james-hitting cache: median-of-3
+    read ~12% low). Values outside 5-60 km/h are pose glitches and return None.
+    """
+    wi = LM[f"{config.DOMINANT_HAND}_wrist"]
+    c = a["contact"]
+    lo, hi = c - int(round(0.15 * fps)), c + int(round(0.05 * fps))
+    speeds = []
+    prev_p, prev_f = None, None
+    for f in range(lo, hi + 1):
+        if f not in hf:
+            continue
+        p = ww[hf[f]][wi]
+        if np.isnan(p).any():
+            prev_p = None
+            continue
+        if prev_p is not None:
+            speeds.append(float(np.linalg.norm(p - prev_p)) * fps / (f - prev_f))
+        prev_p, prev_f = p, f
+    if len(speeds) < 3:
+        return None
+    smoothed = [(speeds[i] + speeds[i + 1]) / 2 for i in range(len(speeds) - 1)]
+    kmh = max(smoothed) * 3.6
+    if not (5.0 <= kmh <= 60.0):
+        return None
+    return round(kmh, 1)
+
+
+def contact_front_cm(a: dict, hf: dict, ww: np.ndarray) -> float | None:
+    """Signed distance (cm) of the contact point ahead of the hip centre, measured
+    along the horizontal swing direction. Positive = met out in front (the classic
+    coaching cue); negative = late/behind. World landmarks are hip-origin metric,
+    so the wrist vector at contact IS the offset from the body centre."""
+    wi = LM[f"{config.DOMINANT_HAND}_wrist"]
+    c = a["contact"]
+    if c not in hf:
+        return None
+    p = ww[hf[c]][wi]
+    if np.isnan(p).any():
+        return None
+    f0 = next((f for f in (c - 1, c - 2) if f in hf and not np.isnan(ww[hf[f]][wi]).any()), None)
+    f1 = next((f for f in (c + 1, c + 2) if f in hf and not np.isnan(ww[hf[f]][wi]).any()), None)
+    if f0 is None or f1 is None:
+        return None
+    v = ww[hf[f1]][wi] - ww[hf[f0]][wi]
+    v[1] = 0.0                                   # horizontal plane only
+    n = float(np.linalg.norm(v))
+    if n < 1e-6:
+        return None
+    hips = (ww[hf[c]][LM["left_hip"]] + ww[hf[c]][LM["right_hip"]]) / 2
+    d = float(np.dot(p - hips, v / n)) * 100.0
+    if not (-40.0 <= d <= 80.0):                 # outside = pose glitch, not biomechanics
+        return None
+    return round(d, 1)
+
+
+def front_verdict(front_cm: float | None):
+    """('OUT FRONT'|'CLOSE'|'BEHIND', grade) for a contact_front_cm value."""
+    if front_cm is None:
+        return None
+    if front_cm >= 15.0:
+        return ("OUT FRONT", GREEN)
+    if front_cm >= 0.0:
+        return ("CLOSE", YELLOW)
+    return ("BEHIND", RED)
+
+
+CONTACT_FRONT_DRILL = ("Drop-feed and freeze at contact: racket meets the ball a "
+                       "racket-length ahead of your front hip, check it 10x.")
+
+
 def peak_wrist_speed(c: int, hf: dict, nn: np.ndarray, W: int, H: int, fps: float) -> float:
     """Glitch-filtered peak wrist speed (px/frame) around a contact — ranking signal only."""
     wi = LM[f"{config.DOMINANT_HAND}_wrist"]
@@ -364,8 +440,13 @@ def _tile_counts(results, key):
     return {"good": good, "ok": ok, "bad": bad}
 
 
-def aggregate(results: list[dict], ref_name: str, ref_knee: float) -> dict:
-    """Session-level aggregate for the report card (mirrors coach_reel's report logic)."""
+def aggregate(results: list[dict], ref_name: str, ref_knee: float,
+              speeds: list | None = None, fronts: list | None = None) -> dict:
+    """Session-level aggregate for the report card (mirrors coach_reel's report logic).
+
+    speeds/fronts: optional per-swing hand_speed_kmh / contact_front_cm lists aligned
+    with results (None entries allowed) — v3 additions, all output fields optional.
+    """
     n = len(results)
     good = sum(r["good"] for r in results)
     knees = [r["knee"] for r in results if not np.isnan(r["knee"])]
@@ -394,6 +475,57 @@ def aggregate(results: list[dict], ref_name: str, ref_knee: float) -> dict:
     def swing_stats(r):
         return {"score": round(score_of(r), 2),
                 "knee_deg": None if np.isnan(r["knee"]) else round(float(r["knee"]), 1)}
+
+    # --- v3: consistency + within-session fade (results arrive chronological) ---
+    scores = [score_of(r) for r in results]
+    sd = float(np.std(scores)) if n >= 3 else None
+    if sd is None:
+        rating = None
+    elif sd < 0.10:
+        rating = "machine-like"
+    elif sd < 0.18:
+        rating = "steady"
+    else:
+        rating = "streaky"
+    consistency = {"score_sd": round(sd, 2) if sd is not None else None, "rating": rating}
+    fatigue = None
+    if n >= 6:
+        third = n // 3
+        first_avg = float(np.mean(scores[:third]))
+        last_avg = float(np.mean(scores[-third:]))
+        fatigue = {"first_third_avg": round(first_avg, 2),
+                   "last_third_avg": round(last_avg, 2),
+                   "fade": round(first_avg - last_avg, 2)}
+
+    # --- v3: hand speed + contact-front tiles (pose-glitch entries are None) ---
+    speed_block = None
+    sp = [s for s in (speeds or []) if s is not None]
+    if sp:
+        best_i = results.index(best) if best is not None else None
+        speed_block = {"max_kmh": round(max(sp), 1),
+                       "avg_kmh": round(float(np.mean(sp)), 1),
+                       "best_swing_kmh": (speeds[best_i] if best_i is not None
+                                          and speeds[best_i] is not None else None),
+                       "measured": len(sp)}
+    front_block = None
+    fr = [f for f in (fronts or []) if f is not None]
+    if fr:
+        front_block = {"avg_cm": round(float(np.mean(fr)), 1),
+                       "out_front": sum(1 for f in fr if f >= 15.0),
+                       "close": sum(1 for f in fr if 0.0 <= f < 15.0),
+                       "behind": sum(1 for f in fr if f < 0.0),
+                       "measured": len(fr)}
+
+    # --- v3: session plan — top-2 measured issues, plus contact-front if it's rife ---
+    focus = [{"key": k, "sentence": PRIORITY_SENTENCES[k], "drill": DRILL_MAP[k],
+              "count": c, "of": n} for c, k in issues[:2]]
+    if front_block and front_block["behind"] >= max(2, front_block["measured"] // 3) \
+            and len(focus) < 2:
+        focus.append({"key": "late contact point",
+                      "sentence": "Priority this week: meet the ball further out in front.",
+                      "drill": CONTACT_FRONT_DRILL,
+                      "count": front_block["behind"], "of": front_block["measured"]})
+    plan = {"focus": focus}
 
     return {
         "n": n,
@@ -426,4 +558,9 @@ def aggregate(results: list[dict], ref_name: str, ref_knee: float) -> dict:
         "issues": [{"key": k, "count": c} for c, k in issues],
         "priority": priority,
         "best_swing_idx": results.index(best) + 1 if best is not None else None,
+        "consistency": consistency,
+        "fatigue": fatigue,
+        "speed": speed_block,
+        "contact_front": front_block,
+        "plan": plan,
     }

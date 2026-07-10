@@ -90,8 +90,11 @@ def test_auto_james():
     assert contacts == sorted(contacts), "grade_all output must be chronological"
 
     results = [a for _, a in selected]
-    agg = grading.aggregate(results, grading.REF_NAME, grading.REF_KNEE)
     hf = {f: f for f in range(sess["norm"].shape[0])}
+    speeds = [grading.swing_speed_kmh(a, hf, sess["world"], fps) for a in results]
+    fronts = [grading.contact_front_cm(a, hf, sess["world"]) for a in results]
+    agg = grading.aggregate(results, grading.REF_NAME, grading.REF_KNEE,
+                            speeds=speeds, fronts=fronts)
     paths = [grading.hand_path_points(a, hf, sess["norm"], W, H) for a in results]
     skels = [grading.skeleton_frames(a, hf, sess["norm"]) for a in results]
     n_pts = [len(p["points"]) for p in paths]
@@ -108,13 +111,32 @@ def test_auto_james():
                   for s in skels)
     n_frames = [len(s["frames"]) for s in skels]
     print(f"  skeleton frames/swing: {n_frames}  markers ordered: {skel_ok}")
+
+    # v3 additions
+    sp = [s for s in speeds if s is not None]
+    fr = [f for f in fronts if f is not None]
+    print(f"  hand speed: {len(sp)}/{len(speeds)} measured, "
+          f"avg {np.mean(sp):.1f} km/h, max {max(sp):.1f}" if sp else "  hand speed: none measured")
+    print(f"  contact front: {len(fr)}/{len(fronts)} measured, avg {np.mean(fr):.1f} cm" if fr
+          else "  contact front: none measured")
+    print(f"  consistency: {agg['consistency']}  fatigue: {agg['fatigue']}")
+    print(f"  speed block: {agg['speed']}")
+    print(f"  front block: {agg['contact_front']}")
+    print(f"  plan focus: {[(f['key'], f['count']) for f in agg['plan']['focus']]}")
+    v3_ok = (len(sp) >= len(speeds) * 0.6 and all(5 <= s <= 60 for s in sp)
+             and np.mean(sp) >= 10
+             and len(fr) >= len(fronts) * 0.5
+             and agg["consistency"]["rating"] is not None
+             and agg["fatigue"] is not None
+             and 1 <= len(agg["plan"]["focus"]) <= 2)
+    print(f"  V3 METRICS {'PASS' if v3_ok else 'FAIL'}")
     sane = (stats["considered"] == min(stats["matching"], grading.MAX_GRADED)
             and stats["graded"] + stats["dropped"] == stats["considered"]
             and 10 <= agg["n"] <= 30
             and len(dist["scores"]) == agg["n"]
             and dist["best"]["score"] >= dist["typical"]["score"]
             and all(100 < k < 185 for k in knees)
-            and all(np - 1 >= 10 for np in n_pts) and skel_ok)
+            and all(np - 1 >= 10 for np in n_pts) and skel_ok and v3_ok)
     print(f"  AUTO PATH {'PASS' if sane else 'FAIL — values out of sane range'}")
     return sane
 

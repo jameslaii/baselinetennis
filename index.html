@@ -116,6 +116,10 @@
   .invite-row input:focus { outline: none; border-color: var(--gold); }
   .invite-row input::placeholder { color: var(--muted); letter-spacing: 0.06em; }
 
+  .prog { margin-top: 18px; }
+  .prog canvas { width: 100%; display: block; }
+  .prog-note { font-family: var(--mono); font-size: 10px; color: var(--amber); margin-top: 7px;
+               letter-spacing: 0.04em; font-variant-numeric: tabular-nums; }
   .past { margin-top: 18px; }
   .past .card { display: flex; align-items: center; gap: 12px; margin-top: 8px; cursor: pointer; width: 100%; text-align: left; color: inherit; }
   .past .card .d { font-size: 13px; font-weight: 600; }
@@ -323,6 +327,12 @@
     </div>
     <p class="form-err" id="home-err"></p>
 
+    <div class="prog card" id="prog-wrap" hidden>
+      <h3 class="k" style="font-size:9.5px; letter-spacing:0.24em; color:var(--gold); margin:0 0 8px">Your Baseline over time</h3>
+      <canvas id="prog-canvas" width="330" height="64"></canvas>
+      <div class="prog-note" id="prog-note"></div>
+    </div>
+
     <div class="past" id="past-wrap" hidden>
       <h3 class="k" style="font-size:9.5px; letter-spacing:0.24em; color:var(--gold)">Your reports</h3>
       <div id="past-list"></div>
@@ -478,6 +488,7 @@
       <h3 id="rp-verdict">—</h3>
       <div class="vp-sub" id="rp-verdict-sub"></div>
       <div class="vp-typ" id="rp-typical" hidden></div>
+      <div class="vp-typ" id="rp-form-line" hidden style="color: var(--muted)"></div>
     </div>
 
     <div class="crit-grid">
@@ -499,6 +510,12 @@
       <div class="crit-tile"><div class="k">Low-to-High</div><div class="crit-v" id="rp-lth">—</div><span class="chip" id="rp-lth-chip"></span></div>
       <div class="crit-tile"><div class="k">Finish</div><div class="crit-v" id="rp-fin">—</div><span class="chip" id="rp-fin-chip"></span></div>
       <div class="crit-tile"><div class="k">Contact Height</div><div class="crit-v" id="rp-ch">—</div><span class="chip" id="rp-ch-chip"></span></div>
+      <div class="crit-tile" id="rp-speed-tile" hidden
+           title="Peak hand speed estimated from pose. The racket head moves roughly 1.5–2× faster than the hand.">
+        <div class="k">Hand Speed · est</div><div class="crit-v" id="rp-speed">—</div><span class="chip" id="rp-speed-chip" hidden></span></div>
+      <div class="crit-tile" id="rp-front-tile" hidden
+           title="How far ahead of your body you meet the ball, measured along the swing direction.">
+        <div class="k">Contact Out Front</div><div class="crit-v" id="rp-front">—</div><span class="chip" id="rp-front-chip" hidden></span></div>
     </div>
 
     <div class="handpath-tile">
@@ -507,9 +524,12 @@
     </div>
 
     <div class="priority-card">
-      <div class="pk">Priority This Week</div>
+      <div class="pk">This Week</div>
       <div class="pt" id="rp-priority">—</div>
       <div class="pd" id="rp-drill"></div>
+      <div class="pt" id="rp-focus2" hidden style="margin-top:12px"></div>
+      <div class="pd" id="rp-drill2" hidden></div>
+      <div class="pd" id="rp-film" hidden style="border-top:1px solid rgba(255,184,77,0.25); padding-top:8px; margin-top:10px"></div>
     </div>
 
     <div class="reel-card">

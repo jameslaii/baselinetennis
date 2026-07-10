@@ -54,9 +54,11 @@
     try { return JSON.parse(localStorage.getItem("baseline_jobs") || "[]"); }
     catch (e) { return []; }
   }
-  function rememberJob(jobId, summary) {
+  function rememberJob(jobId, summary, metrics) {
     var list = savedJobs().filter(function (j) { return j.job_id !== jobId; });
-    list.unshift({ job_id: jobId, date: new Date().toISOString().slice(0, 10), summary: summary });
+    var entry = { job_id: jobId, date: new Date().toISOString().slice(0, 10), summary: summary };
+    if (metrics) entry.metrics = metrics;
+    list.unshift(entry);
     localStorage.setItem("baseline_jobs", JSON.stringify(list.slice(0, 10)));
     renderPast();
   }
@@ -74,6 +76,52 @@
       b.addEventListener("click", function () { openJob(j.job_id); });
       host.appendChild(b);
     });
+    renderProgress(list);
+  }
+
+  // Home-screen progress: avg hand-path score per session, oldest -> newest
+  function renderProgress(list) {
+    var pts = list.filter(function (j) { return j.metrics && j.metrics.avg_score != null; })
+                  .reverse();   // stored newest-first
+    $("prog-wrap").hidden = pts.length < 2;
+    if (pts.length < 2) return;
+    var cv = $("prog-canvas");
+    var ctx = cv.getContext("2d");
+    ctx.clearRect(0, 0, cv.width, cv.height);
+    var pad = 10, W = cv.width, H = cv.height;
+    function sx(i) { return pad + (W - 2 * pad) * i / (pts.length - 1); }
+    function sy(v) { return H - pad - (H - 2 * pad) * Math.max(0, Math.min(1, v)); }
+    // faint grid line at 0.5
+    ctx.strokeStyle = "rgba(154,163,178,0.18)";
+    ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(pad, sy(0.5)); ctx.lineTo(W - pad, sy(0.5)); ctx.stroke();
+    // score line
+    ctx.strokeStyle = "#C9A961";
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    pts.forEach(function (j, i) {
+      var x = sx(i), y = sy(j.metrics.avg_score);
+      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    });
+    ctx.stroke();
+    pts.forEach(function (j, i) {
+      ctx.fillStyle = i === pts.length - 1 ? "#FFB84D" : "#C9A961";
+      ctx.beginPath();
+      ctx.arc(sx(i), sy(j.metrics.avg_score), i === pts.length - 1 ? 3.4 : 2.4, 0, Math.PI * 2);
+      ctx.fill();
+    });
+    var cur = pts[pts.length - 1].metrics, prev = pts[pts.length - 2].metrics;
+    var bits = ["avg swing " + Math.round(cur.avg_score * 100) + "%"];
+    if (cur.speed_max != null && prev.speed_max != null) {
+      var ds = Math.round(cur.speed_max - prev.speed_max);
+      bits.push((ds >= 0 ? "+" : "") + ds + " km/h vs last");
+    }
+    if (cur.knee != null && prev.knee != null) {
+      var dk = Math.round(cur.knee - prev.knee);
+      bits.push("knee " + Math.round(cur.knee) + "° (" + (dk > 0 ? "+" : "") + dk + "°)");
+    }
+    $("prog-note").textContent = bits.join(" · ");
   }
 
   // ---------- landing ----------
@@ -332,6 +380,20 @@
       $("rp-typical").hidden = false;
     }
 
+    // consistency + within-session trend (v3)
+    $("rp-form-line").hidden = true;
+    if (agg.consistency && agg.consistency.rating) {
+      var parts = [agg.consistency.rating + " session"];
+      if (agg.fatigue) {
+        var fade = agg.fatigue.fade;
+        if (fade >= 0.15) parts.push("late swings graded " + Math.round(fade * 100) + " pts lower — pace yourself");
+        else if (fade <= -0.15) parts.push("you warmed up — late swings graded " + Math.round(-fade * 100) + " pts higher");
+        else parts.push("steady from first ball to last");
+      }
+      $("rp-form-line").textContent = parts.join(" · ");
+      $("rp-form-line").hidden = false;
+    }
+
     // warnings
     var warns = (q.warnings || []);
     $("rp-warns").hidden = warns.length === 0;
@@ -358,6 +420,23 @@
     var chLabel = ch.in_zone >= agg.n * 0.6 ? "IN ZONE" : (ch.low > ch.high_late ? ch.low + " LOW" : ch.high_late + " HIGH/LATE");
     chip($("rp-ch-chip"), chLabel, ch.in_zone >= agg.n * 0.6 ? "good" : "ok");
 
+    // v3 tiles: hand speed + contact-out-front (older reports simply hide them)
+    $("rp-speed-tile").hidden = !(agg.speed && agg.speed.max_kmh != null);
+    if (agg.speed && agg.speed.max_kmh != null) {
+      $("rp-speed").innerHTML = Math.round(agg.speed.max_kmh) + ' <small>km/h peak · avg ' +
+        Math.round(agg.speed.avg_kmh) + "</small>";
+    }
+    $("rp-front-tile").hidden = !(agg.contact_front && agg.contact_front.measured);
+    if (agg.contact_front && agg.contact_front.measured) {
+      var cf = agg.contact_front;
+      $("rp-front").innerHTML = cf.out_front + "/" + cf.measured + ' <small>out front</small>';
+      var cfGood = cf.out_front >= cf.measured * 0.5;
+      var cfBad = cf.behind > cf.measured * 0.33;
+      chip($("rp-front-chip"),
+           cfGood ? "OUT FRONT" : (cfBad ? cf.behind + " BEHIND" : "CLOSE"),
+           cfGood ? "good" : (cfBad ? "bad" : "ok"));
+    }
+
     // leg load + dial
     var ll = t.leg_load;
     $("rp-leg").innerHTML = ll.loaded + "/" + agg.n + " <small>loaded</small>";
@@ -383,9 +462,30 @@
     $("rp-path-k").textContent = "Hand path · best swing (" + best.time_s + "s, " +
       best.overall.label.toLowerCase() + ")";
 
-    // priority
+    // this-week plan: priority + second focus + filming tip (v3; falls back to v1 priority)
     $("rp-priority").textContent = agg.priority.sentence;
     $("rp-drill").textContent = "Drill · " + agg.priority.drill;
+    $("rp-focus2").hidden = true;
+    $("rp-drill2").hidden = true;
+    if (agg.plan && agg.plan.focus && agg.plan.focus.length > 1) {
+      var f2 = agg.plan.focus[1];
+      $("rp-focus2").textContent = f2.sentence.replace("Priority this week: ", "Also: ") +
+        (f2.count ? " (" + f2.count + " of " + f2.of + " swings)" : "");
+      $("rp-drill2").textContent = "Drill · " + f2.drill;
+      $("rp-focus2").hidden = false;
+      $("rp-drill2").hidden = false;
+    }
+    $("rp-film").hidden = true;
+    var filmTip = null;
+    warns.forEach(function (w) {
+      if (w.code === "low_pose_pct") filmTip = "Next clip: film closer — you were hard to see in this one.";
+      if (w.code === "few_strokes" && !filmTip) filmTip = "Next clip: a longer hitting block gives a fairer report.";
+      if (w.code === "no_audio" && !filmTip) filmTip = "Next clip: keep the sound on — the ball 'pock' sharpens contact detection.";
+    });
+    if (filmTip) {
+      $("rp-film").textContent = "Filming · " + filmTip;
+      $("rp-film").hidden = false;
+    }
 
     // session stats
     $("rp-n-strokes").textContent = q.strokes_detected_total;
@@ -425,7 +525,11 @@
     initReelCard(res.job_id);
 
     rememberJob(res.job_id, strokeName + " vs " + res.benchmark.display + " · " +
-      agg.good_hand_path + "/" + agg.n + " good");
+      agg.good_hand_path + "/" + agg.n + " good", {
+        avg_score: dist && dist.avg_score != null ? dist.avg_score : (agg.good_hand_path / agg.n),
+        knee: t.leg_load.avg_knee_deg,
+        speed_max: agg.speed ? agg.speed.max_kmh : null,
+      });
     location.hash = "report/" + res.job_id;
     show("report");
   }
