@@ -1,0 +1,21 @@
+{
+  "name": "eala",
+  "video": "videos/raw/eala_fh.mp4",
+  "fps": 59.94005994005994,
+  "n_strokes": 11,
+  "note": "11 hand-verified lefty forehands from court-level practice (multi-angle edit); knee median 126.3",
+  "forehand_mean": {
+    "elbow_angle": 134.9,
+    "knee_flexion": 133.9,
+    "trunk_lean_deg": 25.9,
+    "x_factor_deg": 10.7,
+    "contact_forward_m": 0.1
+  },
+  "representative": {
+    "contact_frame": 3082,
+    "window": [
+      3040,
+      3124
+    ]
+  }
+}

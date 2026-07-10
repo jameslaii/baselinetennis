@@ -1,0 +1,20 @@
+{
+  "name": "alcaraz",
+  "video": "videos\\raw\\alcaraz_back.mp4",
+  "fps": 30.001016983626563,
+  "n_strokes": 6,
+  "forehand_mean": {
+    "elbow_angle": 112.2,
+    "knee_flexion": 134.8,
+    "trunk_lean_deg": 7.8,
+    "x_factor_deg": 13.2,
+    "contact_forward_m": -0.2
+  },
+  "representative": {
+    "contact_frame": 1,
+    "window": [
+      0,
+      31
+    ]
+  }
+}

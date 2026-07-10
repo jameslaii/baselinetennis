@@ -1,0 +1,511 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Baseline — Tennis Stroke Lab</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Upload a 1–2 minute tennis clip and get your forehand or backhand graded against a pro benchmark.">
+<style>
+  /* Baseline is deliberately single-theme: midnight-club charcoal, always. */
+  :root {
+    --bg: #101216;
+    --app-bg: #16181D;
+    --app-bg2: #1C1F26;
+    --app-raise: #22262E;
+    --ivory: #F3EDE0;
+    --text: #F2F4F8;
+    --muted: #9AA3B2;
+    --gold: #C9A961;
+    --gold-dim: rgba(201, 169, 97, 0.35);
+    --amber: #FFB84D;
+    --grass: #3B7A5C;
+    --good: #3DDC84;
+    --ok: #FFD54D;
+    --bad: #FF5D5D;
+    --serif: "Didot", "Bodoni MT", "Playfair Display", "Georgia", serif;
+    --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "Helvetica Neue", sans-serif;
+    --mono: "SF Mono", ui-monospace, "Cascadia Code", "Consolas", monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background:
+      radial-gradient(900px 500px at 50% -5%, rgba(59,122,92,0.14), transparent 65%),
+      var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+  }
+  .shell { max-width: 430px; margin: 0 auto; padding: 26px 20px 60px; position: relative; }
+
+  /* court-line backdrop motif */
+  .courtlines { position: fixed; inset: 0; pointer-events: none; opacity: 0.45; z-index: 0; }
+  .shell > * { position: relative; z-index: 1; }
+
+  .screen { display: none; flex-direction: column; min-height: calc(100vh - 90px); animation: fadein 0.35s ease; }
+  .screen.active { display: flex; }
+  @keyframes fadein { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) {
+    .screen { animation: none; }
+    .anim, .anim * { animation: none !important; transition: none !important; }
+  }
+
+  /* ---------- shared typography ---------- */
+  .eyebrow {
+    font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.3em; text-transform: uppercase;
+    color: var(--gold); margin: 0 0 6px; text-align: center;
+  }
+  h1.h { font-family: var(--serif); font-weight: 500; color: var(--ivory); font-size: 24px;
+         letter-spacing: 0.03em; margin: 0; line-height: 1.18; text-align: center; text-wrap: balance; }
+  .sub { color: var(--muted); font-size: 12.5px; margin: 6px 0 0; text-align: center; }
+  .gold-rule { height: 1px; background: linear-gradient(90deg, transparent, var(--gold-dim), transparent); margin: 16px 0; flex: none; }
+  .spacer { flex: 1; }
+
+  .cta {
+    display: flex; align-items: center; justify-content: center; gap: 10px;
+    font-family: var(--sans); font-size: 15px; font-weight: 600;
+    background: linear-gradient(160deg, #E8CE93, var(--gold) 55%, #A8873F);
+    color: #16181D; border: none; border-radius: 14px; padding: 15px 18px; width: 100%;
+    cursor: pointer; flex: none;
+    box-shadow: 0 6px 22px rgba(201,169,97,0.28), inset 0 1px 0 rgba(255,255,255,0.4);
+  }
+  .cta:active { transform: translateY(1px); }
+  .cta:focus-visible { outline: 2px solid var(--ivory); outline-offset: 2px; }
+  .cta.ghost { background: none; color: var(--ivory); border: 1px solid rgba(201,169,97,0.5); box-shadow: none; }
+  .cta[disabled] { opacity: 0.35; cursor: default; }
+  .navback {
+    background: rgba(34,38,46,0.85); border: 1px solid rgba(154,163,178,0.25); color: var(--muted);
+    width: 34px; height: 34px; border-radius: 50%; cursor: pointer; font-size: 16px;
+    display: flex; align-items: center; justify-content: center; margin-bottom: 14px;
+  }
+  .navback:hover { color: var(--ivory); }
+  .navback:focus-visible { outline: 2px solid var(--gold); }
+
+  .card {
+    background: linear-gradient(160deg, var(--app-bg2), var(--app-raise));
+    border: 1px solid rgba(154,163,178,0.16); border-radius: 16px; padding: 15px 16px;
+  }
+  .k { font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--muted); }
+
+  /* ---------- landing ---------- */
+  .crest { margin: 6px auto 0; display: block; }
+  .brand { font-family: var(--serif); text-align: center; color: var(--ivory);
+           font-size: 36px; letter-spacing: 0.16em; margin: 6px 0 0; font-weight: 500; }
+  .brand-est { text-align: center; font-family: var(--mono); font-size: 9px; letter-spacing: 0.34em;
+               text-transform: uppercase; color: var(--gold); margin: 6px 0 0; }
+  .pitch { text-align: center; color: var(--muted); font-size: 13.5px; max-width: 34ch; margin: 14px auto 0; }
+  .pitch b { color: var(--ivory); font-weight: 600; }
+
+  .guide { margin-top: 18px; }
+  .guide h3 { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.24em; text-transform: uppercase;
+              color: var(--gold); margin: 0 0 10px; font-weight: 600; }
+  .guide ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  .guide li { display: block; position: relative; padding-left: 20px; font-size: 12.5px; color: var(--muted); }
+  .guide li::before { content: "—"; color: var(--grass); position: absolute; left: 0; }
+  .guide li b { color: var(--ivory); font-weight: 600; }
+
+  .invite-row { display: flex; gap: 8px; margin-top: 16px; }
+  .invite-row input {
+    flex: 1; background: var(--app-bg2); border: 1px solid rgba(154,163,178,0.25); border-radius: 12px;
+    color: var(--ivory); font-family: var(--mono); font-size: 13px; letter-spacing: 0.12em;
+    padding: 12px 14px; min-width: 0;
+  }
+  .invite-row input:focus { outline: none; border-color: var(--gold); }
+  .invite-row input::placeholder { color: var(--muted); letter-spacing: 0.06em; }
+
+  .past { margin-top: 18px; }
+  .past .card { display: flex; align-items: center; gap: 12px; margin-top: 8px; cursor: pointer; width: 100%; text-align: left; color: inherit; }
+  .past .card .d { font-size: 13px; font-weight: 600; }
+  .past .card .s { font-size: 10.5px; color: var(--muted); font-family: var(--mono); margin-top: 2px; }
+  .past .card .chev { margin-left: auto; color: var(--gold); }
+
+  /* ---------- upload form ---------- */
+  .file-drop {
+    border: 1.5px dashed rgba(201,169,97,0.45); border-radius: 16px; padding: 22px 16px;
+    text-align: center; cursor: pointer; background: rgba(201,169,97,0.04);
+  }
+  .file-drop:focus-visible { outline: 2px solid var(--gold); }
+  .file-drop .big { font-size: 14px; font-weight: 600; color: var(--ivory); }
+  .file-drop .small { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .file-drop.has { border-style: solid; background: rgba(61,220,132,0.05); border-color: rgba(61,220,132,0.5); }
+  .file-meta { font-family: var(--mono); font-size: 10.5px; color: var(--amber); margin-top: 6px; word-break: break-all; }
+
+  .field { margin-top: 16px; }
+  .field .k { display: block; margin-bottom: 8px; }
+  .segmented { display: flex; background: var(--app-bg2); border-radius: 11px; padding: 3px;
+               border: 1px solid rgba(154,163,178,0.14); }
+  .segmented button {
+    flex: 1; background: none; border: none; color: var(--muted); font-family: var(--sans);
+    font-size: 12.5px; font-weight: 600; padding: 9px 0; border-radius: 8px; cursor: pointer;
+  }
+  .segmented button.on { background: var(--app-raise); color: var(--ivory); box-shadow: 0 1px 6px rgba(0,0,0,0.4); }
+  .segmented button:focus-visible { outline: 2px solid var(--gold); }
+
+  .pro-card {
+    width: 100%; text-align: left; color: inherit; cursor: pointer; position: relative;
+    background: linear-gradient(155deg, var(--app-bg2) 0%, var(--app-raise) 100%);
+    border: 1px solid rgba(154,163,178,0.18); border-radius: 15px; padding: 12px 14px;
+    display: flex; align-items: center; gap: 13px; margin-bottom: 9px;
+    transition: border-color 0.25s, box-shadow 0.25s;
+  }
+  .pro-card:focus-visible { outline: 2px solid var(--gold); }
+  .pro-card.sel { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold), 0 6px 24px rgba(201,169,97,0.22); }
+  .pro-card.sel::after { content: "✓"; position: absolute; top: 10px; right: 12px; color: var(--gold); font-size: 13px; font-weight: 700; }
+  .pro-card.soon { opacity: 0.5; cursor: default; }
+  .pro-mono {
+    width: 44px; height: 44px; border-radius: 50%; flex: none;
+    display: flex; align-items: center; justify-content: center;
+    font-family: var(--serif); font-size: 16px; letter-spacing: 0.05em; color: var(--ivory);
+    border: 1px solid rgba(201,169,97,0.55);
+    background: radial-gradient(circle at 35% 30%, #2E3440, #1A1D23 70%);
+  }
+  .pro-info { flex: 1; min-width: 0; }
+  .pro-name { display: block; font-family: var(--serif); font-size: 16px; color: var(--ivory); letter-spacing: 0.03em; }
+  .pro-line { display: block; font-family: var(--mono); font-size: 9px; color: var(--muted); margin-top: 3px; letter-spacing: 0.06em; }
+  .pro-stat { text-align: right; flex: none; padding-right: 2px; }
+  .pro-stat .v { font-family: var(--mono); font-size: 14px; color: var(--amber); font-variant-numeric: tabular-nums; }
+  .pro-stat .k { display: block; margin-top: 2px; }
+
+  .form-err { color: var(--bad); font-size: 12px; margin-top: 10px; min-height: 16px; }
+
+  /* ---------- uploading / analyzing ---------- */
+  .progress-wrap { margin-top: 22px; }
+  .progress-bar { height: 8px; border-radius: 5px; background: var(--app-bg2); overflow: hidden;
+                  border: 1px solid rgba(154,163,178,0.18); }
+  .progress-bar i { display: block; height: 100%; width: 0%;
+                    background: linear-gradient(90deg, var(--gold), var(--amber)); transition: width 0.4s; }
+  .progress-pct { font-family: var(--mono); font-size: 26px; color: var(--ivory); text-align: center; margin-top: 14px;
+                  font-variant-numeric: tabular-nums; }
+  .scan-stages { width: 100%; margin-top: 18px; }
+  .scan-row { display: flex; align-items: baseline; gap: 10px; padding: 7px 2px;
+              font-family: var(--mono); font-size: 11px; color: var(--muted); opacity: 0.35; transition: opacity 0.4s, color 0.4s; }
+  .scan-row .tick { width: 14px; flex: none; }
+  .scan-row.doing { opacity: 1; color: var(--ivory); }
+  .scan-row.done { opacity: 0.9; }
+  .scan-row.done .tick::before { content: "✓"; color: var(--good); }
+  .scan-row.doing .tick::before { content: "▸"; color: var(--gold); animation: blink 0.9s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: 0.2; } }
+  .scan-fig-wrap { display: flex; justify-content: center; margin-top: 8px; }
+  .scan-ring { animation: spin 9s linear infinite; transform-origin: 110px 110px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .skel-line { stroke: var(--good); stroke-width: 2.4; stroke-linecap: round; fill: none;
+               filter: drop-shadow(0 0 5px rgba(61,220,132,0.7)); }
+  .trail-arc { stroke: var(--amber); stroke-width: 2.4; fill: none; stroke-linecap: round;
+               filter: drop-shadow(0 0 6px rgba(255,184,77,0.8)); }
+
+  .err-box { margin-top: 20px; border: 1px solid rgba(255,93,93,0.5); border-radius: 14px;
+             padding: 14px 16px; background: rgba(255,93,93,0.07); }
+  .err-box .t { color: var(--bad); font-weight: 600; font-size: 13.5px; }
+  .err-box .m { color: var(--muted); font-size: 12.5px; margin-top: 5px; }
+
+  /* ---------- report ---------- */
+  .verdict-plate {
+    text-align: center; padding: 16px 12px 14px; border-radius: 16px; margin-bottom: 12px;
+    border: 1px solid rgba(201,169,97,0.4);
+    background: radial-gradient(300px 120px at 50% 0%, rgba(201,169,97,0.14), transparent 70%),
+                linear-gradient(170deg, var(--app-bg2), var(--app-raise));
+  }
+  .verdict-plate .vp-eyebrow { font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.3em; text-transform: uppercase; color: var(--gold); }
+  .verdict-plate h3 { font-family: var(--serif); font-weight: 500; color: var(--ivory); font-size: 22px; margin: 6px 0 3px; letter-spacing: 0.02em; }
+  .verdict-plate .vp-sub { font-size: 11px; color: var(--muted); }
+  .warn-banner { border: 1px solid rgba(255,213,77,0.45); background: rgba(255,213,77,0.07);
+                 border-radius: 12px; padding: 10px 13px; font-size: 11.5px; color: var(--ok); margin-bottom: 12px; }
+  .warn-banner div + div { margin-top: 5px; }
+  .crit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .crit-tile { background: var(--app-bg2); border: 1px solid rgba(154,163,178,0.15); border-radius: 13px; padding: 11px 12px 10px; }
+  .crit-tile.wide { grid-column: 1 / -1; display: flex; align-items: center; gap: 14px; }
+  .crit-v { font-family: var(--mono); font-size: 19px; color: var(--text); margin-top: 5px; font-variant-numeric: tabular-nums; }
+  .crit-v small { font-size: 11px; color: var(--muted); }
+  .chip { display: inline-block; font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.1em;
+          padding: 3px 8px; border-radius: 999px; margin-top: 7px; }
+  .chip.good { color: #0E3D24; background: var(--good); }
+  .chip.ok { color: #4A3A00; background: var(--ok); }
+  .chip.bad { color: #4A0E0E; background: var(--bad); }
+  .dial-info .crit-v { font-size: 21px; }
+  .dial-info .vs { font-family: var(--mono); font-size: 10px; color: var(--amber); margin-top: 3px; }
+  .handpath-tile { margin-top: 10px; background: var(--app-bg2); border: 1px solid rgba(154,163,178,0.15); border-radius: 13px; padding: 11px 12px; }
+  .priority-card { margin-top: 10px; border-radius: 14px; padding: 13px 14px;
+                   border: 1px solid rgba(255,184,77,0.4);
+                   background: linear-gradient(165deg, rgba(255,184,77,0.10), rgba(255,184,77,0.03)); }
+  .priority-card .pk { font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.24em; text-transform: uppercase; color: var(--amber); }
+  .priority-card .pt { font-size: 12.5px; color: var(--ivory); font-weight: 600; margin-top: 6px; line-height: 1.45; }
+  .priority-card .pd { font-size: 11px; color: var(--muted); margin-top: 6px; line-height: 1.5; }
+  details.swings { margin-top: 12px; }
+  details.swings summary { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase;
+                           color: var(--gold); cursor: pointer; padding: 8px 2px; }
+  .swing-row { display: flex; align-items: center; gap: 10px; padding: 9px 4px; font-size: 11.5px;
+               border-top: 1px solid rgba(154,163,178,0.12); }
+  .swing-row .t { font-family: var(--mono); color: var(--muted); width: 52px; flex: none; }
+  .swing-row .lbl { flex: 1; color: var(--text); }
+  .swing-row .knee { font-family: var(--mono); color: var(--amber); width: 52px; text-align: right; flex: none; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+  .dot.good { background: var(--good); } .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+  .report-actions { display: flex; gap: 8px; margin-top: 14px; }
+  .report-actions .cta { font-size: 13px; padding: 12px 10px; border-radius: 12px; }
+  .session-stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 10px; }
+  .stat-tile { background: var(--app-bg2); border: 1px solid rgba(154,163,178,0.14); border-radius: 12px;
+               padding: 10px 6px 9px; text-align: center; }
+  .stat-tile .v { font-family: var(--mono); font-size: 16px; color: var(--amber); font-variant-numeric: tabular-nums; }
+  .stat-tile .k { display: block; margin-top: 3px; }
+
+  footer.colophon { margin-top: 40px; font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.12em;
+                    color: var(--muted); text-transform: uppercase; text-align: center; }
+</style>
+</head>
+<body>
+<svg class="courtlines" viewBox="0 0 430 900" preserveAspectRatio="xMidYMax slice" aria-hidden="true">
+  <g stroke="#233B2F" stroke-width="1" fill="none" opacity="0.5">
+    <path d="M-60 780 L215 520 L490 780"/>
+    <path d="M10 860 L215 610 L420 860"/>
+    <line x1="215" y1="520" x2="215" y2="900"/>
+  </g>
+</svg>
+
+<div class="shell">
+
+  <!-- ============ LANDING ============ -->
+  <section class="screen active" id="scr-home">
+    <svg class="crest" width="74" height="74" viewBox="0 0 74 74" aria-hidden="true">
+      <circle cx="37" cy="37" r="33" fill="none" stroke="#C9A961" stroke-width="1.2"/>
+      <circle cx="37" cy="37" r="28" fill="none" stroke="#C9A961" stroke-width="0.6" opacity="0.5"/>
+      <path d="M14 48 Q10 34 18 24 M60 48 Q64 34 56 24" stroke="#C9A961" stroke-width="1.1" fill="none"/>
+      <path d="M16 44 l-4 -2 M18 38 l-4.5 -1 M21 32 l-4 -2.5 M58 44 l4 -2 M56 38 l4.5 -1 M53 32 l4 -2.5" stroke="#C9A961" stroke-width="1" fill="none"/>
+      <ellipse cx="37" cy="30" rx="10" ry="13" fill="none" stroke="#F3EDE0" stroke-width="1.4"/>
+      <line x1="37" y1="43" x2="37" y2="55" stroke="#F3EDE0" stroke-width="1.4"/>
+      <path d="M30 26 h14 M30 32 h14 M33 21.5 v21 M41 21.5 v21" stroke="#F3EDE0" stroke-width="0.55" opacity="0.8"/>
+      <circle cx="47" cy="49" r="4.5" fill="#3DDC84" opacity="0.9"/>
+      <path d="M43.5 46.5 q3.5 2.5 7 0 M43.5 51.5 q3.5 -2.5 7 0" stroke="#16181D" stroke-width="0.7" fill="none"/>
+    </svg>
+    <h1 class="brand">BASELINE</h1>
+    <p class="brand-est">Form · Honesty · Heritage</p>
+    <p class="pitch">Upload a <b>1–2 minute clip</b> of you hitting. We read your pose frame by frame and grade
+      your <b>forehand or backhand</b> against a measured pro benchmark.</p>
+    <div class="gold-rule"></div>
+
+    <div class="guide">
+      <h3>Film it like this</h3>
+      <ul>
+        <li><b>Behind the baseline</b>, phone landscape, slightly elevated if you can.</li>
+        <li><b>Full body in frame</b> the whole time — closer is better than wider.</li>
+        <li><b>Sound on</b> — we snap contact frames to the ball "pock".</li>
+        <li><b>Rally or basket feeds</b>, not self-feed tosses.</li>
+        <li>Forehands and two-handed backhands are graded (one-handers coming later).</li>
+      </ul>
+    </div>
+
+    <div class="invite-row">
+      <input id="invite" type="password" placeholder="Invite code" autocomplete="off" aria-label="Invite code">
+    </div>
+    <p class="form-err" id="home-err"></p>
+
+    <div class="past" id="past-wrap" hidden>
+      <h3 class="k" style="font-size:9.5px; letter-spacing:0.24em; color:var(--gold)">Your reports</h3>
+      <div id="past-list"></div>
+    </div>
+
+    <div class="spacer"></div>
+    <button class="cta" id="btn-start">◉ &nbsp;New Analysis</button>
+    <footer class="colophon">Baseline · pose-measured coaching</footer>
+  </section>
+
+  <!-- ============ UPLOAD FORM ============ -->
+  <section class="screen" id="scr-upload">
+    <button class="navback" data-nav="home" aria-label="Back">‹</button>
+    <p class="eyebrow">Step I of II</p>
+    <h1 class="h">Your Footage</h1>
+    <div class="gold-rule"></div>
+
+    <div class="file-drop" id="file-drop" tabindex="0" role="button" aria-label="Choose a video">
+      <div class="big" id="file-cta">Choose a video</div>
+      <div class="small">MP4 / MOV · up to 2 minutes · under ~300 MB</div>
+      <div class="file-meta" id="file-meta"></div>
+      <input id="file-input" type="file" accept="video/*" hidden>
+    </div>
+
+    <div class="field">
+      <span class="k">Racket hand — required</span>
+      <div class="segmented" id="seg-hand" data-value="">
+        <button type="button" data-v="left">Left</button>
+        <button type="button" data-v="right">Right</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <span class="k">Stroke to grade</span>
+      <div class="segmented" id="seg-stroke" data-value="forehand">
+        <button type="button" data-v="forehand" class="on">Forehand</button>
+        <button type="button" data-v="backhand">Backhand (2H)</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <span class="k">Benchmark</span>
+      <div id="pro-list">
+        <button type="button" class="pro-card sel" data-pro="alcaraz" data-display="Carlos Alcaraz" data-knee="135">
+          <span class="pro-mono">CA</span>
+          <span class="pro-info">
+            <span class="pro-name">Carlos Alcaraz</span>
+            <span class="pro-line">RIGHT-HANDED · COURT-LEVEL REF</span>
+          </span>
+          <span class="pro-stat"><span class="v">135°</span><span class="k">Knee @ contact</span></span>
+        </button>
+        <button type="button" class="pro-card" data-pro="eala" data-display="Alex Eala" data-knee="134">
+          <span class="pro-mono">AE</span>
+          <span class="pro-info">
+            <span class="pro-name">Alex Eala</span>
+            <span class="pro-line">LEFT-HANDED · COURT-LEVEL REF</span>
+          </span>
+          <span class="pro-stat"><span class="v">134°</span><span class="k">Knee @ contact</span></span>
+        </button>
+        <button type="button" class="pro-card soon" disabled>
+          <span class="pro-mono">CG</span>
+          <span class="pro-info">
+            <span class="pro-name">Coco Gauff</span>
+            <span class="pro-line">COMING SOON</span>
+          </span>
+        </button>
+        <button type="button" class="pro-card soon" disabled>
+          <span class="pro-mono">JS</span>
+          <span class="pro-info">
+            <span class="pro-name">Jannik Sinner</span>
+            <span class="pro-line">COMING SOON</span>
+          </span>
+        </button>
+        <button type="button" class="pro-card soon" disabled>
+          <span class="pro-mono">ND</span>
+          <span class="pro-info">
+            <span class="pro-name">Novak Djokovic</span>
+            <span class="pro-line">COMING SOON</span>
+          </span>
+        </button>
+      </div>
+    </div>
+
+    <p class="form-err" id="upload-err"></p>
+    <div class="spacer"></div>
+    <button class="cta" id="btn-run" disabled>Run Analysis &nbsp;›</button>
+  </section>
+
+  <!-- ============ UPLOADING ============ -->
+  <section class="screen" id="scr-uploading">
+    <p class="eyebrow">Step II of II</p>
+    <h1 class="h">Uploading</h1>
+    <p class="sub" id="up-file"></p>
+    <div class="gold-rule"></div>
+    <div class="progress-wrap">
+      <div class="progress-bar"><i id="up-bar"></i></div>
+      <div class="progress-pct" id="up-pct">0%</div>
+    </div>
+    <div class="spacer"></div>
+    <button class="cta ghost" id="btn-cancel-upload">Cancel</button>
+  </section>
+
+  <!-- ============ ANALYZING ============ -->
+  <section class="screen" id="scr-analyzing">
+    <p class="eyebrow">Analyzing</p>
+    <h1 class="h">Reading Your Swing</h1>
+    <div class="gold-rule" style="margin-bottom:0"></div>
+
+    <div class="scan-fig-wrap anim">
+      <svg width="220" height="220" viewBox="0 0 220 220" aria-hidden="true">
+        <g class="scan-ring">
+          <circle cx="110" cy="110" r="94" fill="none" stroke="#C9A961" stroke-width="0.8" opacity="0.5" stroke-dasharray="4 10"/>
+        </g>
+        <circle cx="110" cy="110" r="82" fill="none" stroke="#C9A961" stroke-width="0.5" opacity="0.3"/>
+        <path class="skel-line" d="M112 64 L108 92 L101 119 L91 145 L84 172 M101 119 L119 142 L126 170 M108 92 L84 100 L69 117 M108 92 L133 98 L156 84"/>
+        <circle cx="112" cy="54" r="8" fill="none" stroke="#F3EDE0" stroke-width="2.2"/>
+        <circle cx="156" cy="84" r="3.2" fill="#F3EDE0"/>
+        <path class="trail-arc" d="M58 160 Q90 175 124 141 T164 78"/>
+      </svg>
+    </div>
+    <div class="progress-pct" id="an-pct">0%</div>
+    <div class="progress-wrap" style="margin-top:10px">
+      <div class="progress-bar"><i id="an-bar"></i></div>
+    </div>
+
+    <div class="scan-stages" id="an-stages">
+      <div class="scan-row" data-stages="normalizing"><span class="tick"></span><span>Preparing video</span></div>
+      <div class="scan-row" data-stages="extracting_pose"><span class="tick"></span><span>Detecting pose, frame by frame</span></div>
+      <div class="scan-row" data-stages="detecting_strokes,filtering_wing"><span class="tick"></span><span>Finding contact frames</span></div>
+      <div class="scan-row" data-stages="grading,aggregating"><span class="tick"></span><span id="an-grade-line">Grading vs the pro</span></div>
+    </div>
+    <p class="sub" style="margin-top:14px">This takes a few minutes — keep the tab open, background is fine.</p>
+
+    <div class="err-box" id="an-err" hidden>
+      <div class="t" id="an-err-t">Analysis failed</div>
+      <div class="m" id="an-err-m"></div>
+    </div>
+    <div class="spacer"></div>
+    <button class="cta ghost" id="btn-an-home" hidden>Back to start</button>
+  </section>
+
+  <!-- ============ REPORT ============ -->
+  <section class="screen" id="scr-report">
+    <button class="navback" data-nav="home" aria-label="Back to home">‹</button>
+    <p class="eyebrow" id="rp-eyebrow">Session Report</p>
+    <h1 class="h" id="rp-title">—</h1>
+    <div class="gold-rule"></div>
+
+    <div id="rp-warns" class="warn-banner" hidden></div>
+
+    <div class="verdict-plate">
+      <div class="vp-eyebrow">Overall Verdict</div>
+      <h3 id="rp-verdict">—</h3>
+      <div class="vp-sub" id="rp-verdict-sub"></div>
+    </div>
+
+    <div class="crit-grid">
+      <div class="crit-tile wide">
+        <svg width="104" height="66" viewBox="0 0 104 66" aria-hidden="true">
+          <path d="M10 58 A44 44 0 0 1 94 58" fill="none" stroke="#2B2F38" stroke-width="7" stroke-linecap="round"/>
+          <path id="rp-dial-arc" d="M10 58 A44 44 0 0 1 76 21" fill="none" stroke="#FFD54D" stroke-width="7" stroke-linecap="round" pathLength="100" stroke-dasharray="60 100"/>
+          <text id="rp-dial-knee" x="52" y="52" text-anchor="middle" font-family="SF Mono, ui-monospace, Consolas, monospace" font-size="17" fill="#F2F4F8">—</text>
+          <text x="52" y="63" text-anchor="middle" font-family="SF Mono, ui-monospace, Consolas, monospace" font-size="7" fill="#9AA3B2" letter-spacing="1">KNEE @ CONTACT</text>
+        </svg>
+        <div class="dial-info">
+          <div class="k">Leg Load</div>
+          <div class="crit-v" id="rp-leg">—</div>
+          <div class="vs" id="rp-leg-vs"></div>
+          <span class="chip ok" id="rp-leg-chip" hidden></span>
+        </div>
+      </div>
+      <div class="crit-tile"><div class="k">Racket Drop</div><div class="crit-v" id="rp-drop">—</div><span class="chip" id="rp-drop-chip"></span></div>
+      <div class="crit-tile"><div class="k">Low-to-High</div><div class="crit-v" id="rp-lth">—</div><span class="chip" id="rp-lth-chip"></span></div>
+      <div class="crit-tile"><div class="k">Finish</div><div class="crit-v" id="rp-fin">—</div><span class="chip" id="rp-fin-chip"></span></div>
+      <div class="crit-tile"><div class="k">Contact Height</div><div class="crit-v" id="rp-ch">—</div><span class="chip" id="rp-ch-chip"></span></div>
+    </div>
+
+    <div class="handpath-tile">
+      <div class="k" style="margin-bottom:6px" id="rp-path-k">Hand path · best swing</div>
+      <svg id="rp-path-svg" width="100%" height="86" viewBox="0 0 300 86" preserveAspectRatio="none" aria-hidden="true"></svg>
+    </div>
+
+    <div class="priority-card">
+      <div class="pk">Priority This Week</div>
+      <div class="pt" id="rp-priority">—</div>
+      <div class="pd" id="rp-drill"></div>
+    </div>
+
+    <div class="session-stats">
+      <div class="stat-tile"><div class="v" id="rp-n-strokes">—</div><span class="k">Swings found</span></div>
+      <div class="stat-tile"><div class="v" id="rp-n-graded">—</div><span class="k">Graded</span></div>
+      <div class="stat-tile"><div class="v" id="rp-pose-pct">—</div><span class="k">Pose detect</span></div>
+    </div>
+
+    <details class="swings">
+      <summary>Every graded swing</summary>
+      <div id="rp-swings"></div>
+    </details>
+
+    <div class="report-actions">
+      <button class="cta" data-nav="upload">Analyze another clip</button>
+    </div>
+    <footer class="colophon">We only grade what a single camera can honestly measure.</footer>
+  </section>
+
+</div>
+<script src="app.js"></script>
+</body>
+</html>
