@@ -484,7 +484,7 @@
           var url = API_BASE + "/api/jobs/" + jobId + "/reel.mp4?t=" + st.token;
           $("reel-video").src = url;
           $("reel-video").hidden = false;
-          $("reel-dl").href = url;
+          $("reel-dl").href = url + "&dl=1";
           $("reel-dl").hidden = false;
           $("btn-reel").hidden = true;
           setReelStatus(st.meta && st.meta.swings
@@ -626,6 +626,10 @@
       draw(frames.length - 1);   // static: full trail + final pose, all markers
       return;
     }
+
+    // draw the contact pose immediately so the panel is never blank, even if
+    // rAF is throttled (hidden tab) before the animation gets going
+    draw(Math.min(skel.contact_i || 0, frames.length - 1));
 
     // frames are every 2nd source frame; play at half speed => 4/fps seconds each
     var frameMs = 4000 / fps;

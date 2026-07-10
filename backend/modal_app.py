@@ -238,7 +238,7 @@ def api():
         return out
 
     @web.get("/api/jobs/{job_id}/reel.mp4")
-    def get_reel_file(job_id: str, t: str = Query(...)):
+    def get_reel_file(job_id: str, t: str = Query(...), dl: int = Query(default=0)):
         # token auth, not the invite header: <video> tags and download links can't
         # send headers, and the invite code must never appear in a URL.
         from fastapi.responses import FileResponse
@@ -250,7 +250,11 @@ def api():
         path = _job_dir(job_id) / "reel.mp4"
         if not path.exists():
             raise HTTPException(404, detail={"code": "not_found", "message": "Reel file missing."})
-        return FileResponse(path, media_type="video/mp4", filename="baseline-coach-reel.mp4")
+        # Chrome refuses inline <video> playback of attachment-disposition media,
+        # so the player uses inline and only the download link passes dl=1.
+        disposition = "attachment" if dl else "inline"
+        return FileResponse(path, media_type="video/mp4", headers={
+            "Content-Disposition": f'{disposition}; filename="baseline-coach-reel.mp4"'})
 
     return web
 
