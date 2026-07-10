@@ -173,6 +173,12 @@ def best_swing(results, ref_knee):
     return max(results, key=lambda a: (score_of(a), -abs((a["knee"] if not np.isnan(a["knee"]) else 1e9) - ref_knee)))
 
 
+def median_swing(results):
+    """Median-scored swing (lower middle for even counts)."""
+    ordered = sorted(results, key=score_of)
+    return ordered[(len(ordered) - 1) // 2]
+
+
 # ---------------------------------------------------------------------------
 # Service additions
 # ---------------------------------------------------------------------------
@@ -240,14 +246,16 @@ def peak_wrist_speed(c: int, hf: dict, nn: np.ndarray, W: int, H: int, fps: floa
     return best
 
 
-def rank_candidates(strokes: list[dict], nn: np.ndarray, ww: np.ndarray,
-                    W: int, H: int, fps: float, wing: str,
-                    top_n: int = 10, max_candidates: int = 40):
-    """Automatic replacement for the desktop's hand-verified contact lists.
+MAX_GRADED = 30
 
-    Filters segment-detected strokes to the requested wing, grades each with
-    analyse() on the session-level pose, and returns (selected, stats) where
-    selected = [(stroke, analysis)] of the top_n by (hand-path score, peak speed).
+
+def grade_all(strokes: list[dict], nn: np.ndarray, ww: np.ndarray,
+              W: int, H: int, fps: float, wing: str, max_graded: int = MAX_GRADED):
+    """Grade EVERY stroke of the requested wing (honest distribution, no score bias).
+
+    If more than max_graded match, an evenly TIME-spaced subset is graded — never a
+    score-ranked one, which would flatter the averages. Returns (graded, stats) where
+    graded = [(stroke, analysis)] in chronological order.
     """
     hf = {f: f for f in range(nn.shape[0])}
     counts = {"forehand": 0, "backhand": 0, "ambiguous": 0}
@@ -258,15 +266,13 @@ def rank_candidates(strokes: list[dict], nn: np.ndarray, ww: np.ndarray,
         if w == wing:
             matching.append(s)
 
-    # keep grading affordable on stroke-dense clips: pre-cut by raw peak speed
-    if len(matching) > max_candidates:
-        matching = sorted(
-            matching,
-            key=lambda s: -peak_wrist_speed(s["contact_frame"], hf, nn, W, H, fps),
-        )[:max_candidates]
+    picked = matching
+    if len(matching) > max_graded:
+        idxs = sorted(set(np.linspace(0, len(matching) - 1, max_graded).round().astype(int).tolist()))
+        picked = [matching[i] for i in idxs]
 
     graded, dropped = [], 0
-    for s in matching:
+    for s in picked:
         c = s["contact_frame"]
         if not (0 <= c < nn.shape[0]) or np.isnan(nn[c][LM["left_ankle"], 1]):
             dropped += 1
@@ -278,12 +284,46 @@ def rank_candidates(strokes: list[dict], nn: np.ndarray, ww: np.ndarray,
             continue
         graded.append((s, a))
 
-    graded.sort(key=lambda t: (-score_of(t[1]),
-                               -peak_wrist_speed(t[0]["contact_frame"], hf, nn, W, H, fps)))
-    selected = sorted(graded[:top_n], key=lambda t: t[0]["contact_frame"])
     stats = {"counts": counts, "matching": counts.get(wing, 0),
-             "graded": len(graded), "dropped": dropped}
-    return selected, stats
+             "considered": len(picked), "graded": len(graded), "dropped": dropped}
+    return graded, stats
+
+
+# BlazePose skeleton for the in-browser replay — same minimal connection set the
+# desktop annotate.py uses, re-indexed onto the 14 landmarks we actually ship.
+_SKEL_LMS = [11, 12, 13, 14, 15, 16, 23, 24, 25, 26, 27, 28, 31, 32]
+_RAW_CONNECTIONS = [
+    (11, 12), (11, 13), (13, 15), (12, 14), (14, 16),   # arms + shoulders
+    (11, 23), (12, 24), (23, 24),                        # torso
+    (23, 25), (25, 27), (24, 26), (26, 28),              # legs
+    (27, 31), (28, 32),                                  # feet
+]
+SKELETON_CONNECTIONS = [[_SKEL_LMS.index(a), _SKEL_LMS.index(b)] for a, b in _RAW_CONNECTIONS]
+
+
+def skeleton_wrist_index(hand: str) -> int:
+    return _SKEL_LMS.index(LM[f"{hand}_wrist"])
+
+
+def skeleton_frames(a: dict, hf: dict, nn: np.ndarray, step: int = 2) -> dict:
+    """Downsampled 14-landmark wireframe over the analysed window, for the browser
+    replay. Coordinates are raw image-normalized [x, y] (the client scales to its
+    canvas by the bounding box); frames with missing pose are null."""
+    frames_used = a["win"][::step]
+    out = []
+    for f in frames_used:
+        row = nn[hf[f]]
+        if np.isnan(row[_SKEL_LMS, :2]).any():
+            out.append(None)
+        else:
+            out.append([[round(float(row[i, 0]), 4), round(float(row[i, 1]), 4)]
+                        for i in _SKEL_LMS])
+
+    def idx_of(frame):
+        return int(min(range(len(frames_used)), key=lambda k: abs(frames_used[k] - frame)))
+
+    return {"frames": out, "contact_i": idx_of(a["contact"]),
+            "low_i": idx_of(a["low_f"]), "fin_i": idx_of(a["fin_f"])}
 
 
 def hand_path_points(a: dict, hf: dict, nn: np.ndarray, W: int, H: int,
@@ -349,9 +389,23 @@ def aggregate(results: list[dict], ref_name: str, ref_knee: float) -> dict:
                     "drill": "Rally sets of 20 focusing on repeating the same finish height."}
 
     best = best_swing(results, ref_knee) if results else None
+    med = median_swing(results) if results else None
+
+    def swing_stats(r):
+        return {"score": round(score_of(r), 2),
+                "knee_deg": None if np.isnan(r["knee"]) else round(float(r["knee"]), 1)}
+
     return {
         "n": n,
         "good_hand_path": int(good),
+        "distribution": {
+            "scores": [round(score_of(r), 2) for r in results],
+            "avg_score": round(float(np.mean([score_of(r) for r in results])), 2) if results else None,
+            "median_score": round(score_of(med), 2) if med is not None else None,
+            "best": swing_stats(best) if best is not None else None,
+            "typical": swing_stats(med) if med is not None else None,
+            "median_swing_idx": results.index(med) + 1 if med is not None else None,
+        },
         "tiles": {
             "racket_drop": _tile_counts(results, "drp"),
             "low_to_high": _tile_counts(results, "lth"),

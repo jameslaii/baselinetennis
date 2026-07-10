@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <title>Baseline — Tennis Stroke Lab</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="description" content="Upload a 1–2 minute tennis clip and get your forehand or backhand graded against a pro benchmark.">
+<meta name="description" content="Upload a 1–4 minute tennis clip and get your forehand or backhand graded against a pro benchmark.">
 <style>
   /* Baseline is deliberately single-theme: midnight-club charcoal, always. */
   :root {
@@ -210,6 +210,8 @@
   .verdict-plate .vp-eyebrow { font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.3em; text-transform: uppercase; color: var(--gold); }
   .verdict-plate h3 { font-family: var(--serif); font-weight: 500; color: var(--ivory); font-size: 22px; margin: 6px 0 3px; letter-spacing: 0.02em; }
   .verdict-plate .vp-sub { font-size: 11px; color: var(--muted); }
+  .verdict-plate .vp-typ { font-family: var(--mono); font-size: 10px; color: var(--amber);
+                           margin-top: 7px; font-variant-numeric: tabular-nums; }
   .warn-banner { border: 1px solid rgba(255,213,77,0.45); background: rgba(255,213,77,0.07);
                  border-radius: 12px; padding: 10px 13px; font-size: 11.5px; color: var(--ok); margin-bottom: 12px; }
   .warn-banner div + div { margin-top: 5px; }
@@ -232,6 +234,17 @@
   .priority-card .pk { font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.24em; text-transform: uppercase; color: var(--amber); }
   .priority-card .pt { font-size: 12.5px; color: var(--ivory); font-weight: 600; margin-top: 6px; line-height: 1.45; }
   .priority-card .pd { font-size: 11px; color: var(--muted); margin-top: 6px; line-height: 1.5; }
+  .reel-card { margin-top: 10px; border-radius: 14px; padding: 13px 14px;
+               border: 1px solid rgba(61,220,132,0.35);
+               background: linear-gradient(165deg, rgba(61,220,132,0.08), rgba(61,220,132,0.02)); }
+  .reel-card .pk { font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.24em; text-transform: uppercase; color: var(--good); }
+  .reel-card .pd { font-size: 11px; color: var(--muted); margin: 6px 0 10px; line-height: 1.5; }
+  .reel-card .cta { font-size: 13px; padding: 11px 10px; border-radius: 12px; }
+  .reel-status { font-family: var(--mono); font-size: 10.5px; color: var(--amber); margin-top: 9px;
+                 letter-spacing: 0.04em; }
+  .reel-card video { width: 100%; border-radius: 12px; margin-top: 10px; display: block;
+                     background: #000; border: 1px solid rgba(154,163,178,0.2); }
+  .reel-card a.cta { margin-top: 8px; text-decoration: none; }
   details.swings { margin-top: 12px; }
   details.swings summary { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase;
                            color: var(--gold); cursor: pointer; padding: 8px 2px; }
@@ -242,6 +255,15 @@
   .swing-row .knee { font-family: var(--mono); color: var(--amber); width: 52px; text-align: right; flex: none; }
   .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
   .dot.good { background: var(--good); } .dot.ok { background: var(--ok); } .dot.bad { background: var(--bad); }
+  .swing-row.expandable { cursor: pointer; }
+  .swing-row.expandable:hover .lbl, .swing-row.expandable:focus-visible .lbl { color: var(--ivory); }
+  .swing-row.expandable:focus-visible { outline: 1px solid var(--gold); border-radius: 6px; }
+  .swing-row .rep { font-family: var(--mono); font-size: 10px; color: var(--gold); width: 14px; flex: none; text-align: center; }
+  .swing-detail { padding: 8px 2px 12px; }
+  .swing-detail canvas { width: 100%; display: block; background: var(--app-bg2);
+                         border: 1px solid rgba(154,163,178,0.18); border-radius: 12px; cursor: pointer; }
+  .swing-detail .hint { font-family: var(--mono); font-size: 9px; color: var(--muted); margin-top: 6px;
+                        letter-spacing: 0.1em; text-transform: uppercase; text-align: center; }
   .report-actions { display: flex; gap: 8px; margin-top: 14px; }
   .report-actions .cta { font-size: 13px; padding: 12px 10px; border-radius: 12px; }
   .session-stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-top: 10px; }
@@ -280,7 +302,7 @@
     </svg>
     <h1 class="brand">BASELINE</h1>
     <p class="brand-est">Form · Honesty · Heritage</p>
-    <p class="pitch">Upload a <b>1–2 minute clip</b> of you hitting. We read your pose frame by frame and grade
+    <p class="pitch">Upload a <b>1–4 minute clip</b> of you hitting. We read your pose frame by frame and grade
       your <b>forehand or backhand</b> against a measured pro benchmark.</p>
     <div class="gold-rule"></div>
 
@@ -319,7 +341,7 @@
 
     <div class="file-drop" id="file-drop" tabindex="0" role="button" aria-label="Choose a video">
       <div class="big" id="file-cta">Choose a video</div>
-      <div class="small">MP4 / MOV · up to 2 minutes · under ~300 MB</div>
+      <div class="small">MP4 / MOV · up to 4 minutes · under ~300 MB</div>
       <div class="file-meta" id="file-meta"></div>
       <input id="file-input" type="file" accept="video/*" hidden>
     </div>
@@ -454,6 +476,7 @@
       <div class="vp-eyebrow">Overall Verdict</div>
       <h3 id="rp-verdict">—</h3>
       <div class="vp-sub" id="rp-verdict-sub"></div>
+      <div class="vp-typ" id="rp-typical" hidden></div>
     </div>
 
     <div class="crit-grid">
@@ -486,6 +509,16 @@
       <div class="pk">Priority This Week</div>
       <div class="pt" id="rp-priority">—</div>
       <div class="pd" id="rp-drill"></div>
+    </div>
+
+    <div class="reel-card">
+      <div class="pk">Coach Reel</div>
+      <div class="pd">A slow-motion replay of your swings with every grade drawn on frame —
+        see exactly how this report was derived. Rendered on demand, yours to download.</div>
+      <button class="cta ghost" id="btn-reel">Generate slow-mo reel · ~2 min</button>
+      <div class="reel-status" id="reel-status" hidden></div>
+      <video id="reel-video" controls playsinline preload="metadata" hidden></video>
+      <a id="reel-dl" class="cta ghost" download="baseline-coach-reel.mp4" hidden>Download reel</a>
     </div>
 
     <div class="session-stats">

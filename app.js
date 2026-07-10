@@ -9,8 +9,9 @@
   var API_BASE = localStorage.getItem("baseline_api") || "https://jameslaii--baseline-api.modal.run";
 
   var MAX_BYTES = 500 * 1024 * 1024;
-  var MAX_DURATION_S = 155;
+  var MAX_DURATION_S = 250;
   var POLL_MS = 4000;
+  var REEL_POLL_MS = 5000;
   var STALL_MS = 5 * 60 * 1000;
 
   var state = {
@@ -41,6 +42,8 @@
     var nav = e.target.closest("[data-nav]");
     if (nav) {
       stopPolling();
+      stopReelPoll();
+      stopReplay();
       if (state.xhr) { state.xhr.abort(); state.xhr = null; }
       show(nav.getAttribute("data-nav"));
     }
@@ -114,7 +117,7 @@
       done = true;
       URL.revokeObjectURL(url);
       if (dur && dur > MAX_DURATION_S) {
-        $("upload-err").textContent = "Clip is " + Math.round(dur) + "s - trim it to 2 minutes or less.";
+        $("upload-err").textContent = "Clip is " + Math.round(dur) + "s - trim it to 4 minutes or less.";
         drop.classList.remove("has");
         $("file-meta").textContent = "";
         refreshRunButton();
@@ -229,6 +232,8 @@
 
   function openJob(jobId) {
     stopPolling();
+    stopReelPoll();
+    stopReplay();
     location.hash = "job/" + jobId;
     show("analyzing");
     $("an-err").hidden = true;
@@ -314,6 +319,19 @@
     $("rp-verdict-sub").textContent = agg.good_hand_path + " of " + agg.n +
       " graded swings rated GOOD on hand path";
 
+    // typical vs best (schema 2+; older saved reports simply skip it)
+    var dist = agg.distribution;
+    $("rp-typical").hidden = true;
+    if (dist && dist.typical && dist.best) {
+      function pct(x) { return Math.round(x * 100) + "%"; }
+      var typ = "Typical swing " + pct(dist.typical.score) +
+                (dist.typical.knee_deg != null ? " · knee " + Math.round(dist.typical.knee_deg) + "°" : "") +
+                "  —  best " + pct(dist.best.score) +
+                (dist.best.knee_deg != null ? " · knee " + Math.round(dist.best.knee_deg) + "°" : "");
+      $("rp-typical").textContent = typ;
+      $("rp-typical").hidden = false;
+    }
+
     // warnings
     var warns = (q.warnings || []);
     $("rp-warns").hidden = warns.length === 0;
@@ -374,7 +392,8 @@
     $("rp-n-graded").textContent = q.strokes_graded;
     $("rp-pose-pct").textContent = Math.round(q.pose_detect_pct) + "%";
 
-    // per-swing rows
+    // per-swing rows (tap to expand the skeleton replay when the data is there)
+    stopReplay();
     var host = $("rp-swings");
     host.textContent = "";
     res.swings.forEach(function (s) {
@@ -386,13 +405,244 @@
       row.querySelector(".t").textContent = s.time_s + "s";
       row.querySelector(".lbl").textContent = s.overall.label + " — " + (s.overall.note || "");
       row.querySelector(".knee").textContent = knee != null ? Math.round(knee) + "°" : "—";
+      if (s.skeleton && res.skeleton_connections) {
+        row.classList.add("expandable");
+        row.setAttribute("role", "button");
+        row.tabIndex = 0;
+        var rep = document.createElement("span");
+        rep.className = "rep";
+        rep.textContent = "▸";
+        row.appendChild(rep);
+        function toggle() { toggleReplay(row, s, res); }
+        row.addEventListener("click", toggle);
+        row.addEventListener("keydown", function (e) {
+          if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggle(); }
+        });
+      }
       host.appendChild(row);
     });
+
+    initReelCard(res.job_id);
 
     rememberJob(res.job_id, strokeName + " vs " + res.benchmark.display + " · " +
       agg.good_hand_path + "/" + agg.n + " good");
     location.hash = "report/" + res.job_id;
     show("report");
+  }
+
+  // ---------- coach reel ----------
+  var reel = { timer: null, jobId: null };
+  function stopReelPoll() {
+    if (reel.timer) { clearInterval(reel.timer); reel.timer = null; }
+  }
+  function setReelStatus(text) {
+    $("reel-status").hidden = !text;
+    $("reel-status").textContent = text || "";
+  }
+  function initReelCard(jobId) {
+    stopReelPoll();
+    reel.jobId = jobId;
+    $("reel-video").hidden = true;
+    $("reel-video").removeAttribute("src");
+    $("reel-dl").hidden = true;
+    $("btn-reel").hidden = false;
+    $("btn-reel").disabled = false;
+    setReelStatus("");
+    fetchReel(jobId);   // a reel may already exist for this job
+  }
+  $("btn-reel").addEventListener("click", function () {
+    var jobId = reel.jobId;
+    if (!jobId) return;
+    $("btn-reel").disabled = true;
+    setReelStatus("Queuing render…");
+    fetch(API_BASE + "/api/jobs/" + jobId + "/reel", {
+      method: "POST",
+      headers: { "X-Invite-Code": invite() },
+    }).then(function (r) {
+      if (r.status === 202 || r.ok) { startReelPoll(jobId); return; }
+      return r.json().then(function (b) {
+        throw new Error((b && b.detail && b.detail.message) || "HTTP " + r.status);
+      });
+    }).catch(function (err) {
+      $("btn-reel").disabled = false;
+      setReelStatus(err.message || "Could not start the reel - try again.");
+    });
+  });
+  function startReelPoll(jobId) {
+    stopReelPoll();
+    fetchReel(jobId);
+    reel.timer = setInterval(function () { fetchReel(jobId); }, REEL_POLL_MS);
+  }
+  function fetchReel(jobId) {
+    fetch(API_BASE + "/api/jobs/" + jobId + "/reel", {
+      headers: { "X-Invite-Code": invite() },
+    }).then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (st) {
+        if (!st || jobId !== reel.jobId) return;
+        if (st.reel_status === "done" && st.token) {
+          stopReelPoll();
+          var url = API_BASE + "/api/jobs/" + jobId + "/reel.mp4?t=" + st.token;
+          $("reel-video").src = url;
+          $("reel-video").hidden = false;
+          $("reel-dl").href = url;
+          $("reel-dl").hidden = false;
+          $("btn-reel").hidden = true;
+          setReelStatus(st.meta && st.meta.swings
+            ? st.meta.swings + " swings · 0.5× speed" : "");
+        } else if (st.reel_status === "queued" || st.reel_status === "running") {
+          $("btn-reel").disabled = true;
+          setReelStatus("Rendering… " +
+            (st.reel_percent != null ? st.reel_percent + "%" : "this takes a couple of minutes"));
+          if (!reel.timer) startReelPoll(jobId);
+        } else if (st.reel_status === "error") {
+          stopReelPoll();
+          $("btn-reel").disabled = false;
+          setReelStatus((st.error && st.error.message) || "Render failed - try again.");
+        }
+        // reel_status null = never requested: leave the button as-is
+      }).catch(function () { /* transient; next poll retries */ });
+  }
+
+  // ---------- skeleton replay ----------
+  var replay = { raf: null, detail: null, row: null };
+  function stopReplay() {
+    if (replay.raf) cancelAnimationFrame(replay.raf);
+    if (replay.detail) replay.detail.remove();
+    if (replay.row) {
+      var r = replay.row.querySelector(".rep");
+      if (r) r.textContent = "▸";
+    }
+    replay = { raf: null, detail: null, row: null };
+  }
+  function toggleReplay(row, swing, res) {
+    var wasOpen = replay.row === row;
+    stopReplay();
+    if (wasOpen) return;
+    var det = document.createElement("div");
+    det.className = "swing-detail";
+    var cv = document.createElement("canvas");
+    cv.width = 300; cv.height = 220;
+    var hint = document.createElement("div");
+    hint.className = "hint";
+    hint.textContent = "0.5× replay · tap to pause";
+    det.appendChild(cv);
+    det.appendChild(hint);
+    row.after(det);
+    row.querySelector(".rep").textContent = "▾";
+    replay.detail = det;
+    replay.row = row;
+    runSkeleton(cv, swing.skeleton, res);
+  }
+  function runSkeleton(cv, skel, res) {
+    var ctx = cv.getContext("2d");
+    var conns = res.skeleton_connections;
+    var wristI = res.skeleton_wrist_i || 0;
+    var vw = (res.video && res.video.width) || 1920;
+    var vh = (res.video && res.video.height) || 1080;
+    var fps = (res.video && res.video.fps) || 30;
+    var frames = skel.frames || [];
+
+    // bounding box over all present frames, in video-pixel space (keeps proportions)
+    var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    frames.forEach(function (f) {
+      if (!f) return;
+      f.forEach(function (p) {
+        var x = p[0] * vw, y = p[1] * vh;
+        if (x < minX) minX = x; if (x > maxX) maxX = x;
+        if (y < minY) minY = y; if (y > maxY) maxY = y;
+      });
+    });
+    if (!isFinite(minX)) return;
+    var pad = 18;
+    var scale = Math.min((cv.width - 2 * pad) / Math.max(1, maxX - minX),
+                         (cv.height - 2 * pad) / Math.max(1, maxY - minY));
+    var offX = (cv.width - (maxX - minX) * scale) / 2 - minX * scale;
+    var offY = (cv.height - (maxY - minY) * scale) / 2 - minY * scale;
+    function px(p) { return [p[0] * vw * scale + offX, p[1] * vh * scale + offY]; }
+
+    function markerFrame(i) {
+      // nearest present frame at or before i (marker may land on a null frame)
+      for (var k = i; k >= 0; k--) if (frames[k]) return frames[k];
+      return null;
+    }
+    var markers = [
+      { i: skel.low_i, label: "LOW", color: "#3DDC84" },
+      { i: skel.contact_i, label: "CONTACT", color: "#F3EDE0" },
+      { i: skel.fin_i, label: "FINISH", color: "#3DDC84" },
+    ];
+
+    function draw(upto) {
+      ctx.clearRect(0, 0, cv.width, cv.height);
+      // wrist trail up to the current frame
+      ctx.strokeStyle = "#FFB84D";
+      ctx.lineWidth = 2.2;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      var started = false;
+      for (var i = 0; i <= upto && i < frames.length; i++) {
+        if (!frames[i]) continue;
+        var w = px(frames[i][wristI]);
+        if (!started) { ctx.moveTo(w[0], w[1]); started = true; }
+        else ctx.lineTo(w[0], w[1]);
+      }
+      ctx.stroke();
+      // markers already passed
+      markers.forEach(function (m) {
+        if (upto < m.i) return;
+        var mf = markerFrame(m.i);
+        if (!mf) return;
+        var w = px(mf[wristI]);
+        ctx.fillStyle = m.color;
+        ctx.beginPath();
+        ctx.arc(w[0], w[1], 3.2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.font = "7px ui-monospace, Consolas, monospace";
+        ctx.textAlign = "center";
+        ctx.fillText(m.label, Math.min(cv.width - 20, Math.max(20, w[0])), Math.min(cv.height - 4, w[1] + 12));
+      });
+      // skeleton for the current frame
+      var f = frames[upto] || markerFrame(upto);
+      if (f) {
+        ctx.strokeStyle = "#3DDC84";
+        ctx.lineWidth = 2;
+        conns.forEach(function (c) {
+          var a = px(f[c[0]]), b = px(f[c[1]]);
+          ctx.beginPath();
+          ctx.moveTo(a[0], a[1]);
+          ctx.lineTo(b[0], b[1]);
+          ctx.stroke();
+        });
+        ctx.fillStyle = "#F3EDE0";
+        f.forEach(function (p) {
+          var w = px(p);
+          ctx.beginPath();
+          ctx.arc(w[0], w[1], 1.6, 0, Math.PI * 2);
+          ctx.fill();
+        });
+      }
+    }
+
+    if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
+      draw(frames.length - 1);   // static: full trail + final pose, all markers
+      return;
+    }
+
+    // frames are every 2nd source frame; play at half speed => 4/fps seconds each
+    var frameMs = 4000 / fps;
+    var idx = 0, acc = 0, prevT = null, paused = false;
+    cv.addEventListener("click", function () { paused = !paused; prevT = null; });
+    function tick(t) {
+      replay.raf = requestAnimationFrame(tick);
+      if (paused) return;
+      if (prevT == null) prevT = t;
+      acc += t - prevT;
+      prevT = t;
+      if (acc < frameMs) return;
+      acc = 0;
+      draw(idx);
+      idx = (idx + 1) % frames.length;
+    }
+    replay.raf = requestAnimationFrame(tick);
   }
 
   function drawHandPath(swing) {

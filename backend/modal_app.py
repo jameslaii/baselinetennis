@@ -1,10 +1,13 @@
 """Baseline — Modal backend.
 
-One Modal app with two functions:
-  * api      — FastAPI: upload a clip (invite-code gated), poll job status/results.
-  * analyze  — worker: ffmpeg normalize -> pose extraction -> stroke detection ->
-               wing filter -> automatic top-10 selection -> heavy re-grade ->
-               report-card results JSON. No video rendering.
+One Modal app with three functions:
+  * api         — FastAPI: upload a clip (invite-code gated), poll job status/results,
+                  request/serve the slow-mo coach reel.
+  * analyze     — worker: ffmpeg normalize -> pose extraction -> stroke detection ->
+                  wing classify -> grade EVERY matching swing (evenly time-spaced cap
+                  of 30) -> heavy re-grade -> results JSON on the volume.
+  * render_reel — worker: on-demand slow-mo handpath reel (reuses the analysis job's
+                  heavy pose cache), served via a per-job token.
 
 Deploy:  modal deploy backend/modal_app.py
 Secret:  modal secret create baseline-invite INVITE_CODE=<code>
@@ -24,7 +27,7 @@ import modal
 app = modal.App("baseline")
 
 MAX_BYTES = 500 * 1024 * 1024      # hard upload cap
-MAX_DURATION_S = 155               # "1-2 minute clips" + slack
+MAX_DURATION_S = 250               # "1-4 minute clips" + slack
 DAILY_JOB_CAP = 15
 BENCHMARKS = {"alcaraz": "Carlos Alcaraz", "eala": "Alex Eala"}
 
@@ -177,7 +180,7 @@ def api():
         if duration > MAX_DURATION_S:
             shutil.rmtree(jobdir, ignore_errors=True)
             raise HTTPException(400, detail={"code": "too_long",
-                                             "message": f"Clip is {duration:.0f}s - trim it to 2 minutes or less."})
+                                             "message": f"Clip is {duration:.0f}s - trim it to 4 minutes or less."})
 
         jobs.put(quota_key, (jobs.get(quota_key) or 0) + 1)
         params = {"handedness": handedness, "stroke": stroke, "benchmark": benchmark}
@@ -193,13 +196,61 @@ def api():
         entry = jobs.get(job_id)
         if entry is None:
             raise HTTPException(404, detail={"code": "not_found", "message": "No such job."})
+        entry.pop("reel_token", None)   # served only by GET .../reel
         if entry.get("status") == "done" and "results" not in entry:
-            # durable fallback: results.json on the volume
+            # full results (with skeletons) live only on the volume — too big for the Dict
             vol.reload()
             rp = _job_dir(job_id) / "results.json"
             if rp.exists():
                 entry["results"] = json.loads(rp.read_text(encoding="utf-8"))
         return entry
+
+    # ---- coach reel -------------------------------------------------------
+    @web.post("/api/jobs/{job_id}/reel", status_code=202)
+    def create_reel(job_id: str, x_invite_code: str | None = Header(default=None)):
+        check_invite(x_invite_code)
+        entry = jobs.get(job_id)
+        if entry is None:
+            raise HTTPException(404, detail={"code": "not_found", "message": "No such job."})
+        if entry.get("status") != "done":
+            raise HTTPException(409, detail={"code": "not_ready",
+                                             "message": "The analysis must finish before a reel can be rendered."})
+        rs = entry.get("reel_status")
+        if rs in ("queued", "running", "done"):   # idempotent
+            return {"reel_status": rs}
+        _set_status(job_id, reel_status="queued", reel_error=None)
+        render_reel.spawn(job_id)
+        return {"reel_status": "queued"}
+
+    @web.get("/api/jobs/{job_id}/reel")
+    def get_reel(job_id: str, x_invite_code: str | None = Header(default=None)):
+        check_invite(x_invite_code)
+        entry = jobs.get(job_id)
+        if entry is None:
+            raise HTTPException(404, detail={"code": "not_found", "message": "No such job."})
+        out = {"reel_status": entry.get("reel_status"),
+               "reel_percent": entry.get("reel_percent")}
+        if entry.get("reel_error"):
+            out["error"] = entry["reel_error"]
+        if entry.get("reel_status") == "done":
+            out["token"] = entry.get("reel_token")
+            out["meta"] = entry.get("reel_meta")
+        return out
+
+    @web.get("/api/jobs/{job_id}/reel.mp4")
+    def get_reel_file(job_id: str, t: str = Query(...)):
+        # token auth, not the invite header: <video> tags and download links can't
+        # send headers, and the invite code must never appear in a URL.
+        from fastapi.responses import FileResponse
+        entry = jobs.get(job_id)
+        token = (entry or {}).get("reel_token")
+        if not token or not hmac.compare_digest(t, token):
+            raise HTTPException(403, detail={"code": "bad_token", "message": "Invalid reel link."})
+        vol.reload()
+        path = _job_dir(job_id) / "reel.mp4"
+        if not path.exists():
+            raise HTTPException(404, detail={"code": "not_found", "message": "Reel file missing."})
+        return FileResponse(path, media_type="video/mp4", filename="baseline-coach-reel.mp4")
 
     return web
 
@@ -208,7 +259,7 @@ def api():
 # Worker
 # ---------------------------------------------------------------------------
 @app.function(image=pipeline_image, volumes={str(VOL_PATH): vol},
-              cpu=8.0, memory=8192, timeout=1800)
+              cpu=8.0, memory=8192, timeout=3600)
 def analyze(job_id: str, params: dict):
     import sys
     sys.path.insert(0, "/root")
@@ -262,7 +313,7 @@ def analyze(job_id: str, params: dict):
         def progress(idx, total):
             if total and time.time() - last[0] > 2:
                 last[0] = time.time()
-                stage("extracting_pose", 10 + 60 * idx / total)
+                stage("extracting_pose", 10 + 52 * idx / total)
 
         data = extract_pose.extract(norm_mp4, progress_cb=progress)
         n = data["n_frames"]
@@ -276,18 +327,18 @@ def analyze(job_id: str, params: dict):
                                  "grades may be rough. Film closer next time.")
 
         # ---- 3. stroke detection ------------------------------------------
-        stage("detecting_strokes", 70)
+        stage("detecting_strokes", 64)
         strokes = segment.detect_strokes(norm_mp4, data=data)
         if not strokes:
             return fail("no_strokes", "No swings detected - make sure the clip shows "
                                       "you actually hitting balls.")
         audio_refined = sum(1 for s in strokes if s["contact_from_audio"])
 
-        # ---- 4. wing filter ------------------------------------------------
-        stage("filtering_wing", 74)
+        # ---- 4. wing classify + grade every matching swing ------------------
+        stage("filtering_wing", 68)
         W, H, fps = data["width"], data["height"], data["fps"]
         wing = params["stroke"]
-        selected, stats = grading.rank_candidates(
+        selected, stats = grading.grade_all(
             strokes, data["norm"], data["world"], W, H, fps, wing)
         if not selected:
             other = "backhand" if wing == "forehand" else "forehand"
@@ -297,9 +348,12 @@ def analyze(job_id: str, params: dict):
         if len(selected) <= 2:
             warn("few_strokes", f"Only {len(selected)} clean {wing}s found - "
                                 "a longer hitting clip gives a fairer report.")
+        if stats["matching"] > stats["considered"]:
+            warn("swings_sampled", f"{stats['matching']} {wing}s found; graded an evenly "
+                                   f"time-spaced {stats['considered']} of them.")
 
         # ---- 5. heavy re-grade ---------------------------------------------
-        stage("grading", 80)
+        stage("grading", 72)
         benchmark = params["benchmark"]
         ref_knee = grading.set_reference(benchmark, BENCHMARKS[benchmark])
         contacts = [s["contact_frame"] for s, _ in selected]
@@ -316,7 +370,7 @@ def analyze(job_id: str, params: dict):
             warn("heavy_pass_failed", "High-fidelity re-grade failed; using the session-level pass.")
             print("[analyze] heavy pass failed:", e)
 
-        stage("grading", 90)
+        stage("grading", 92)
         results, swings, dropped = [], [], 0
         by_frame = {s["contact_frame"]: s for s, _ in selected}
         for c in contacts:
@@ -345,6 +399,7 @@ def analyze(job_id: str, params: dict):
                 "overall": {"label": a["overall"][0], "grade": a["overall"][1],
                             "score": round(grading.score_of(a), 2), "note": a["note"]},
                 "hand_path": path,
+                "skeleton": grading.skeleton_frames(a, hf, nn),
             })
         if dropped:
             warn("swings_dropped", f"{dropped} swing(s) could not be graded and were skipped.")
@@ -355,7 +410,7 @@ def analyze(job_id: str, params: dict):
         stage("aggregating", 96)
         agg = grading.aggregate(results, grading.REF_NAME, ref_knee)
         payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "job_id": job_id,
             "created_at": _utc_now(),
             "params": params,
@@ -367,32 +422,89 @@ def analyze(job_id: str, params: dict):
                 "pose_detect_pct": round(100 * pose_pct, 1),
                 "strokes_detected_total": len(strokes),
                 "strokes_matching_wing": stats["matching"],
+                "strokes_considered": stats["considered"],
                 "strokes_other_wing": stats["counts"]["backhand" if wing == "forehand" else "forehand"],
                 "strokes_ambiguous": stats["counts"]["ambiguous"],
                 "strokes_graded": len(results),
-                "swings_dropped": dropped,
+                "swings_dropped": stats["dropped"] + dropped,
                 "audio_available": norm_wav.exists(),
                 "contacts_audio_refined": audio_refined,
                 "warnings": warnings,
             },
+            "skeleton_connections": grading.SKELETON_CONNECTIONS,
+            "skeleton_wrist_i": grading.skeleton_wrist_index(params["handedness"]),
             "swings": swings,
             "aggregate": agg,
         }
-        # numpy scalars (float32 etc.) leak from the grading math; make everything
-        # plain-JSON once, and store the SAME sanitized object in the Dict so the
-        # FastAPI response never hits an unserializable value either.
+        # numpy scalars (float32 etc.) leak from the grading math; sanitize once.
         def np_default(o):
             if hasattr(o, "item"):
                 return o.item()
             raise TypeError(f"not JSON serializable: {type(o)}")
         payload = json.loads(json.dumps(payload, default=np_default))
+        # With per-swing skeletons the payload is far too big for the Dict —
+        # it lives ONLY on the volume; GET /api/jobs/{id} reads it from there.
         (jobdir / "results.json").write_text(json.dumps(payload), encoding="utf-8")
         norm_wav.unlink(missing_ok=True)
         vol.commit()
-        _set_status(job_id, status="done", stage="done", percent=100, results=payload)
+        _set_status(job_id, status="done", stage="done", percent=100, results_ready=True)
         print(f"[analyze] {job_id} done: {len(results)} swings graded")
     except Exception as e:  # noqa: BLE001
         import traceback
         traceback.print_exc()
         fail("internal", "Analysis failed unexpectedly. Try a shorter or clearer clip.")
+        raise
+
+
+# ---------------------------------------------------------------------------
+# Coach reel worker
+# ---------------------------------------------------------------------------
+@app.function(image=pipeline_image, volumes={str(VOL_PATH): vol},
+              cpu=8.0, memory=8192, timeout=1800)
+def render_reel(job_id: str):
+    import sys
+    sys.path.insert(0, "/root")
+    from pipeline import config, extract_pose
+    from pipeline import reel as reel_mod
+
+    jobdir = _job_dir(job_id)
+    try:
+        vol.reload()
+        results = json.loads((jobdir / "results.json").read_text(encoding="utf-8"))
+        params = results["params"]
+        _set_status(job_id, reel_status="running", reel_percent=2)
+
+        config.DATA_DIR = jobdir
+        config.DOMINANT_HAND = params["handedness"]
+        norm_mp4 = jobdir / "normalized.mp4"
+        data = extract_pose.load(norm_mp4)      # session npz cache from the analyze job
+
+        contacts = [s["contact_frame"] for s in results["swings"]]
+        best_idx = results["aggregate"].get("best_swing_idx")   # 1-based
+        picked = reel_mod.pick_reel_contacts(
+            contacts, None if best_idx is None else best_idx - 1)
+
+        last = [0.0]
+
+        def progress(i, total):
+            if time.time() - last[0] > 3:
+                last[0] = time.time()
+                _set_status(job_id, reel_status="running",
+                            reel_percent=int(2 + 95 * i / max(1, total)))
+
+        bench = results["benchmark"]
+        meta = reel_mod.render(norm_mp4, data, picked, jobdir / "reel.mp4",
+                               stroke=params["stroke"], ref_name=bench["display"],
+                               ref_knee=bench["knee_flexion_deg"], cache_tag="heavy",
+                               progress_cb=progress)
+        vol.commit()
+        _set_status(job_id, reel_status="done", reel_percent=100,
+                    reel_token=uuid.uuid4().hex, reel_meta=meta)
+        print(f"[reel] {job_id} done: {meta}")
+    except Exception:  # noqa: BLE001
+        import traceback
+        traceback.print_exc()
+        _set_status(job_id, reel_status="error",
+                    reel_error={"code": "reel_failed",
+                                "message": "Reel render failed - tap Generate to retry."})
         raise

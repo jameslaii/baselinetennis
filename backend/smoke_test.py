@@ -6,8 +6,10 @@ Runs against the existing pose caches in C:\\Users\\james\\tennis-coach\\data:
      on the same fh_heavy cache the desktop coach reel used, SNAP_SEC=0.05, ref eala.
      Known desktop results: good hand paths 5/10, loaded 7/10, avg knee@contact ~130,
      zone 7/10 (0 low, 3 high).
-  2. AUTO    — the full service path (detect_strokes -> wing filter -> rank -> grade ->
+  2. AUTO    — the full service path (detect_strokes -> wing classify -> grade_all ->
      aggregate) on the "james hitting" session cache (right-handed, ref alcaraz).
+     v2: grades EVERY matching forehand (evenly time-spaced cap 30), chronological,
+     and the aggregate carries a distribution block (avg/median/best vs typical).
 
 Run with the tennis-coach venv python (has numpy/scipy/librosa):
   C:\\Users\\james\\tennis-coach\\.venv\\Scripts\\python.exe backend\\smoke_test.py
@@ -79,23 +81,40 @@ def test_auto_james():
     strokes = segment.detect_strokes(Path(r"D:\tennis vid\james hitting.mp4"), data=sess)
     print(f"  strokes detected: {len(strokes)} (desktop found 148)")
 
-    selected, stats = grading.rank_candidates(
+    selected, stats = grading.grade_all(
         strokes, sess["norm"], sess["world"], W, H, fps, "forehand")
-    print(f"  wing counts: {stats['counts']}  graded {stats['graded']}  dropped {stats['dropped']}")
+    print(f"  wing counts: {stats['counts']}  matching {stats['matching']}  "
+          f"considered {stats['considered']}  graded {stats['graded']}  dropped {stats['dropped']}")
     assert len(selected) > 0, "no swings selected"
+    contacts = [s["contact_frame"] for s, _ in selected]
+    assert contacts == sorted(contacts), "grade_all output must be chronological"
 
     results = [a for _, a in selected]
     agg = grading.aggregate(results, grading.REF_NAME, grading.REF_KNEE)
     hf = {f: f for f in range(sess["norm"].shape[0])}
     paths = [grading.hand_path_points(a, hf, sess["norm"], W, H) for a in results]
+    skels = [grading.skeleton_frames(a, hf, sess["norm"]) for a in results]
     n_pts = [len(p["points"]) for p in paths]
     knees = [r["knee"] for r in results if not np.isnan(r["knee"])]
-    print(f"  top {agg['n']} graded: good paths {agg['good_hand_path']}, "
+    dist = agg["distribution"]
+    print(f"  {agg['n']} graded: good paths {agg['good_hand_path']}, "
           f"avg knee {np.mean(knees):.1f}, verdict {agg['verdict']['label']}")
     print(f"  priority: {agg['priority']['key']}  hand-path points/swing: {n_pts}")
+    print(f"  distribution: avg {dist['avg_score']} median {dist['median_score']} "
+          f"best {dist['best']} typical {dist['typical']}")
     print(f"  tiles: {json.dumps(agg['tiles'], indent=None)}")
-    sane = (5 <= agg["n"] <= 10 and all(100 < k < 185 for k in knees)
-            and all(np - 1 >= 10 for np in n_pts))
+    skel_ok = all(s["frames"] and any(f is not None for f in s["frames"])
+                  and 0 <= s["low_i"] <= s["contact_i"] <= s["fin_i"] < len(s["frames"])
+                  for s in skels)
+    n_frames = [len(s["frames"]) for s in skels]
+    print(f"  skeleton frames/swing: {n_frames}  markers ordered: {skel_ok}")
+    sane = (stats["considered"] == min(stats["matching"], grading.MAX_GRADED)
+            and stats["graded"] + stats["dropped"] == stats["considered"]
+            and 10 <= agg["n"] <= 30
+            and len(dist["scores"]) == agg["n"]
+            and dist["best"]["score"] >= dist["typical"]["score"]
+            and all(100 < k < 185 for k in knees)
+            and all(np - 1 >= 10 for np in n_pts) and skel_ok)
     print(f"  AUTO PATH {'PASS' if sane else 'FAIL — values out of sane range'}")
     return sane
 
