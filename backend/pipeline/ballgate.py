@@ -23,10 +23,13 @@ from . import config
 
 # Window read around each wrist-speed peak (contact sits at/near the peak).
 PRE_S, POST_S = 0.50, 0.35
-PROC_W = 960                 # analysis width; everything below is tuned at this scale
-DIFF_THRESH = 25             # three-frame difference binarization
+# 1280 not 960: a 1080p upload (the resolution the site tells users to export) renders
+# the ball ~7 source px with motion blur and double compression — at 960w the diff
+# signal all but vanishes and recall collapses (seen live: 8/29 verified vs 14 real).
+PROC_W = 1280                # analysis width; px thresholds below scale by (w / 1280)
+DIFF_THRESH = 16             # three-frame difference binarization (blur smears amplitude)
 MIN_TRACK_PTS = 4
-MIN_SPEED_PXS = 400          # scaled px/sec — even lazy feeds exceed this by far
+MIN_SPEED_PXS = 530          # px/sec at 1280w — even lazy feeds exceed this by far
 TURN_DEG = 45                # direction change at the racket that counts as a hit
 REACH_ARM_MULT = 1.6         # racket reach = 1.6x shoulder->wrist distance
 MIN_CONFIDENCE = 0.35
@@ -66,7 +69,7 @@ def _wrist_and_reach(norm, f, w, h, wi, si):
         else:
             arm = np.hypot((wr[0] - sh[0]) * w, (wr[1] - sh[1]) * h)
             reach = REACH_ARM_MULT * arm
-        return (wx, wy), float(np.clip(reach, 30, 0.35 * w))
+        return (wx, wy), float(np.clip(reach, 0.023 * w, 0.35 * w))
     return None, None
 
 
@@ -82,10 +85,12 @@ def _ball_area_band(norm, frames, w, h):
         if not (np.isnan(sy) or np.isnan(ay)):
             hts.append(abs(ay - sy) * h / 0.72)   # shoulder-ankle ~72% of height
     if not hts:
-        return 3.0, 400.0
+        return 2.0, 500.0
     d = float(np.median(hts)) * 0.04              # ball diameter in px
     area = np.pi * (d / 2) ** 2
-    return max(3.0, area * 0.25), min(1200.0, max(60.0, area * 6.0))
+    # loose lower bound: thresholding a blurred/compressed ball keeps only its core,
+    # so measured blobs run far smaller than the geometric estimate
+    return max(2.0, area * 0.10), min(1600.0, max(80.0, area * 6.0))
 
 
 def _blobs(motion, amin, amax):
@@ -98,14 +103,22 @@ def _blobs(motion, amin, amax):
             continue
         (cx, cy), (bw, bh), _ang = cv2.minAreaRect(c)
         long_, short = max(bw, bh), max(1.0, min(bw, bh))
-        if long_ / short > 4.0:                   # blur streaks OK, edges/limbs not
+        if long_ / short > 6.0:                   # blur streaks OK, edges/limbs not
             continue
         out.append((float(cx), float(cy), float(a)))
     return out
 
 
-def _link_tracks(frame_blobs):
-    """Greedy nearest-neighbour linking with constant-velocity prediction."""
+def _link_tracks(frame_blobs, w):
+    """Greedy nearest-neighbour linking with constant-velocity prediction.
+
+    The bootstrap gate (single-point tracks, velocity unknown yet) must admit a full
+    frame-to-frame ball displacement: a rally ball at 60 fps crosses ~3% of the frame
+    per frame, and a tight bootstrap silently kills every fast track at birth — only
+    slow arcs (apexes, bounces, dribbles) ever survived it. Once velocity is known the
+    gate rides the constant-velocity prediction, which also lets a struck ball's
+    reversal END the track at the racket (exactly what the hit test wants to see).
+    """
     tracks, done = [], []                          # track: {"pts": [(t,x,y)], "miss": int}
     for t, blobs in frame_blobs:
         used = set()
@@ -114,11 +127,13 @@ def _link_tracks(frame_blobs):
             if len(tr["pts"]) >= 2:
                 (t1, x1, y1) = tr["pts"][-2]
                 vx, vy = (x0 - x1) / max(1, t0 - t1), (y0 - y1) / max(1, t0 - t1)
+                gate_base = 0.008 * w
             else:
                 vx = vy = 0.0
+                gate_base = 0.06 * w               # bootstrap: no velocity estimate yet
             dt = t - t0
             px, py = x0 + vx * dt, y0 + vy * dt
-            gate = max(14.0, 2.5 * np.hypot(vx, vy) * dt + 8.0)
+            gate = max(gate_base, 2.5 * np.hypot(vx, vy) * dt + 0.006 * w)
             best, bestd = None, gate
             for i, (bx, by, _a) in enumerate(blobs):
                 if i in used:
@@ -143,7 +158,7 @@ def _link_tracks(frame_blobs):
     return [tr["pts"] for tr in done if len(tr["pts"]) >= MIN_TRACK_PTS]
 
 
-def _hit_from_track(pts, wrist_of, fps):
+def _hit_from_track(pts, wrist_of, fps, w):
     """(contact_t, confidence, dmin, turn_deg, pts) if this track is a ball being struck.
 
     Three evidence patterns, all requiring the track to range well OUTSIDE racket
@@ -156,7 +171,7 @@ def _hit_from_track(pts, wrist_of, fps):
     arr = np.array(pts, dtype=float)               # [n, (t, x, y)]
     dts = np.diff(arr[:, 0]); steps = np.hypot(np.diff(arr[:, 1]), np.diff(arr[:, 2]))
     speed_pxs = float(np.median(steps / np.maximum(dts, 1))) * fps
-    if speed_pxs < MIN_SPEED_PXS:
+    if speed_pxs < MIN_SPEED_PXS * (w / PROC_W):
         return None
     dists, reaches = [], []
     for t, x, y in pts:
@@ -287,11 +302,11 @@ def verify_hits(video_path: Path, strokes: list[dict], data: dict,
                         motion[max(0, y0):max(0, y1), max(0, x0):max(0, x1)] = 0
                 frame_blobs.append((f, _blobs(motion, amin, amax)))
 
-            tracks = _link_tracks(frame_blobs)
+            tracks = _link_tracks(frame_blobs, w)
             wrist_of = lambda f: _wrist_and_reach(norm, f, w, h, wi, si)  # noqa: E731
             best = None
             for pts in tracks:
-                hit = _hit_from_track(pts, wrist_of, fps)
+                hit = _hit_from_track(pts, wrist_of, fps, w)
                 if hit and hit[1] >= MIN_CONFIDENCE and (best is None or hit[1] > best[1]):
                     best = hit
             if best:
