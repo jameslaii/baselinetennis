@@ -27,8 +27,8 @@ WIN_SEC = 0.7                # half-window analyzed around each contact
 PRE_SEC = 0.5                # how far before contact to search for the hand LOW point
 POST_SEC = 0.4               # how far after contact to search for the FINISH
 SNAP_SEC = 0.3               # re-pick contact at the fastest wrist frame within this radius
-# When contacts are audio-refined (segment snaps to the ball "pock"), trust them more:
-SNAP_SEC_AUDIO = 0.1
+# When ballgate anchored the contact on the observed ball direction change, trust it more:
+SNAP_SEC_TIGHT = 0.1
 
 REF_NAME = "Alcaraz"
 REF_KNEE = 135.0
@@ -47,7 +47,7 @@ def grade(val, hi, lo, labels):
     return labels[2], RED, 0.0
 
 
-def analyse(c, hf, nn, ww, W, H, fps):
+def analyse(c, hf, nn, ww, W, H, fps, snap_sec=None):
     wi = LM[f"{config.DOMINANT_HAND}_wrist"]
     win = [f for f in range(c - int(WIN_SEC * fps), c + int(WIN_SEC * fps)) if f in hf]
     # glitch cap scales with resolution: genuine contact-speed is ~60-110 px/frame at 4K/60,
@@ -58,7 +58,7 @@ def analyse(c, hf, nn, ww, W, H, fps):
         a, b = nn[hf[win[k]]][wi, :2], nn[hf[win[k-1]]][wi, :2]
         if not np.isnan(a).any() and not np.isnan(b).any():
             d = np.hypot((a[0]-b[0])*W, (a[1]-b[1])*H); spd[win[k]] = d if d < cap else 0
-    near = [f for f in win if abs(f - c) <= max(1, int(SNAP_SEC * fps))]
+    near = [f for f in win if abs(f - c) <= max(1, int((snap_sec or SNAP_SEC) * fps))]
     cc = max(near, key=lambda f: spd.get(f, 0)) if near else c
     r = nn[hf[cc]]
     body = abs((r[LM['left_ankle']][1]+r[LM['right_ankle']][1])/2
@@ -354,7 +354,8 @@ def grade_all(strokes: list[dict], nn: np.ndarray, ww: np.ndarray,
             dropped += 1
             continue
         try:
-            a = analyse(c, hf, nn, ww, W, H, fps)
+            snap = SNAP_SEC_TIGHT if s.get("contact_from_ball") else None
+            a = analyse(c, hf, nn, ww, W, H, fps, snap_sec=snap)
         except (ValueError, KeyError, IndexError):
             dropped += 1
             continue

@@ -1,9 +1,10 @@
 """Long-footage segmentation — vendored from tennis-coach src/segment.py.
 
 Changes for the service: package-relative imports; extract_pose imported lazily
-(so the grader can run on cached arrays without mediapipe installed); audio onsets
-prefer a sibling <stem>.wav (the worker writes one with ffmpeg — soundfile reads it
-natively, no mp4 audio decoding needed).
+(so the grader can run on cached arrays without mediapipe installed); the audio
+onset path is GONE — wrist-speed peaks only propose candidate swings, and
+pipeline.ballgate verifies/refines each contact from the ball's trajectory
+(pure vision; outdoor clips often have no audible ball "pock" anyway).
 """
 from pathlib import Path
 
@@ -28,21 +29,13 @@ def wrist_speed_series(data: dict) -> np.ndarray:
     return np.nan_to_num(speed, nan=0.0)
 
 
-def _audio_onset_times(video_path: Path) -> np.ndarray:
-    try:
-        import librosa
-        wav = video_path.with_suffix(".wav")
-        src = wav if wav.exists() else video_path
-        y, sr = librosa.load(str(src), sr=None, mono=True)
-        if y.size == 0:
-            return np.array([])
-        return librosa.onset.onset_detect(y=y, sr=sr, units="time", backtrack=True)
-    except Exception as e:  # noqa: BLE001
-        print(f"[segment] audio onsets unavailable ({e}); using wrist-speed peaks only")
-        return np.array([])
-
-
 def detect_strokes(video_path: Path, data: dict | None = None) -> list[dict]:
+    """Candidate swings from dominant-wrist speed peaks (chronological).
+
+    These are CANDIDATES only — nothing here knows whether a ball was struck.
+    Run pipeline.ballgate.verify_hits() on the result to confirm real hits and
+    re-anchor contact_frame on the observed ball direction change.
+    """
     video_path = Path(video_path)
     if data is None:
         from . import extract_pose
@@ -59,29 +52,19 @@ def detect_strokes(video_path: Path, data: dict | None = None) -> list[dict]:
     distance = max(1, int(config.STROKE_MIN_GAP_SEC * fps))
     peaks, _ = find_peaks(speed, height=height, distance=distance)
 
-    onsets = _audio_onset_times(video_path)
-    onset_frames = np.round(onsets * fps).astype(int) if onsets.size else np.array([])
     win = int(config.STROKE_WINDOW_SEC * fps)
-    snap_tol = int(config.AUDIO_SNAP_TOL_SEC * fps)
-
     strokes = []
     for i, peak in enumerate(peaks):
         contact = int(peak)
-        snapped = False
-        if onset_frames.size:
-            j = int(np.argmin(np.abs(onset_frames - peak)))
-            if abs(int(onset_frames[j]) - peak) <= snap_tol:
-                contact = int(onset_frames[j]); snapped = True
         strokes.append({
             "stroke_no": i + 1,
             "peak_frame": int(peak),
             "contact_frame": contact,
             "time_s": round(contact / fps, 2),
-            "contact_from_audio": snapped,
+            "contact_from_ball": False,   # ballgate.verify_hits fills this in
             "window": (max(0, contact - win), min(n - 1, contact + win)),
         })
 
-    print(f"[segment] {len(strokes)} strokes detected "
-          f"(speed>{height:.2f}, min gap {config.STROKE_MIN_GAP_SEC}s, "
-          f"{int((np.array([s['contact_from_audio'] for s in strokes])).sum()) if strokes else 0} audio-refined)")
+    print(f"[segment] {len(strokes)} candidate swings detected "
+          f"(speed>{height:.2f}, min gap {config.STROKE_MIN_GAP_SEC}s)")
     return strokes

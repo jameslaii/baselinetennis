@@ -52,7 +52,7 @@ def download_models():
 pipeline_image = (
     modal.Image.debian_slim(python_version="3.12")
     .apt_install("ffmpeg", "libgl1", "libglib2.0-0", "libgles2", "libegl1")
-    .pip_install("mediapipe==0.10.35", "scipy~=1.14", "librosa~=0.10", "soundfile~=0.12")
+    .pip_install("mediapipe==0.10.35", "scipy~=1.14")
     .run_function(download_models)
     .env({"BASELINE_MODELS_DIR": "/root/models"})
     .add_local_dir(Path(__file__).parent / "pipeline", "/root/pipeline")
@@ -268,7 +268,7 @@ def analyze(job_id: str, params: dict):
     import sys
     sys.path.insert(0, "/root")
     import numpy as np
-    from pipeline import config, extract_pose, grading, segment
+    from pipeline import ballgate, config, extract_pose, grading, segment
 
     jobdir = _job_dir(job_id)
     warnings: list[dict] = []
@@ -288,7 +288,6 @@ def analyze(job_id: str, params: dict):
         vol.reload()
         upload = jobdir / "upload.bin"
         norm_mp4 = jobdir / "normalized.mp4"
-        norm_wav = jobdir / "normalized.wav"
 
         # ---- 1. normalize -------------------------------------------------
         stage("normalizing", 2)
@@ -299,12 +298,6 @@ def analyze(job_id: str, params: dict):
             capture_output=True, text=True, timeout=900)
         if r.returncode != 0 or not norm_mp4.exists():
             return fail("bad_video", "Could not decode that video - try exporting it as MP4 (H.264).")
-        ra = subprocess.run(
-            ["ffmpeg", "-y", "-i", str(upload), "-vn", "-ac", "1", "-ar", "22050", str(norm_wav)],
-            capture_output=True, text=True, timeout=300)
-        if ra.returncode != 0:
-            warn("no_audio", "No usable audio track - contact frames rely on wrist speed only.")
-            norm_wav.unlink(missing_ok=True)
         upload.unlink(missing_ok=True)
         vol.commit()
 
@@ -336,10 +329,24 @@ def analyze(job_id: str, params: dict):
         if not strokes:
             return fail("no_strokes", "No swings detected - make sure the clip shows "
                                       "you actually hitting balls.")
-        audio_refined = sum(1 for s in strokes if s["contact_from_audio"])
+
+        # ---- 3b. vision ball-gate: keep only swings that actually hit a ball
+        stage("verifying_hits", 66)
+        strokes, gate = ballgate.verify_hits(norm_mp4, strokes, data)
+        candidates = len(strokes)
+        if gate["active"]:
+            strokes = [s for s in strokes if s["contact_from_ball"]]
+            if not strokes:
+                return fail("no_ball_hits",
+                            "Swings detected but none verifiably hit a ball - film closer "
+                            "or more side-on so the ball is visible.")
+        else:
+            warn("ball_untracked",
+                 "Couldn't track the ball in this clip - swings are NOT verified as real "
+                 "hits. Film closer or at higher resolution for verified analysis.")
 
         # ---- 4. wing classify + grade every matching swing ------------------
-        stage("filtering_wing", 68)
+        stage("filtering_wing", 70)
         W, H, fps = data["width"], data["height"], data["fps"]
         wing = params["stroke"]
         selected, stats = grading.grade_all(
@@ -380,7 +387,8 @@ def analyze(job_id: str, params: dict):
         by_frame = {s["contact_frame"]: s for s, _ in selected}
         for c in contacts:
             try:
-                a = grading.analyse(c, hf, nn, ww, W, H, fps)
+                snap = grading.SNAP_SEC_TIGHT if by_frame[c].get("contact_from_ball") else None
+                a = grading.analyse(c, hf, nn, ww, W, H, fps, snap_sec=snap)
             except Exception:  # noqa: BLE001
                 dropped += 1
                 continue
@@ -396,7 +404,8 @@ def analyze(job_id: str, params: dict):
                 "idx": len(results),
                 "contact_frame": int(a["contact"]),
                 "time_s": round(a["contact"] / fps, 2),
-                "contact_from_audio": bool(s["contact_from_audio"]),
+                "contact_from_ball": bool(s.get("contact_from_ball")),
+                "ball_confidence": s.get("ball_confidence", 0.0),
                 "verdicts": {
                     "racket_drop":    {"label": a["drp"][0], "grade": a["drp"][1], "value": None},
                     "low_to_high":    {"label": a["lth"][0], "grade": a["lth"][1], "value": None},
@@ -424,7 +433,7 @@ def analyze(job_id: str, params: dict):
         agg = grading.aggregate(results, grading.REF_NAME, ref_knee,
                                 speeds=speeds, fronts=fronts)
         payload = {
-            "schema_version": 2,
+            "schema_version": 3,
             "job_id": job_id,
             "created_at": _utc_now(),
             "params": params,
@@ -434,15 +443,16 @@ def analyze(job_id: str, params: dict):
                           "knee_flexion_deg": round(ref_knee, 1)},
             "quality": {
                 "pose_detect_pct": round(100 * pose_pct, 1),
-                "strokes_detected_total": len(strokes),
+                "strokes_detected_total": candidates,
+                "ball_gate_active": gate["active"],
+                "strokes_ball_verified": gate["hits"],
+                "strokes_no_ball": candidates - gate["hits"],
                 "strokes_matching_wing": stats["matching"],
                 "strokes_considered": stats["considered"],
                 "strokes_other_wing": stats["counts"]["backhand" if wing == "forehand" else "forehand"],
                 "strokes_ambiguous": stats["counts"]["ambiguous"],
                 "strokes_graded": len(results),
                 "swings_dropped": stats["dropped"] + dropped,
-                "audio_available": norm_wav.exists(),
-                "contacts_audio_refined": audio_refined,
                 "warnings": warnings,
             },
             "skeleton_connections": grading.SKELETON_CONNECTIONS,
@@ -459,7 +469,6 @@ def analyze(job_id: str, params: dict):
         # With per-swing skeletons the payload is far too big for the Dict —
         # it lives ONLY on the volume; GET /api/jobs/{id} reads it from there.
         (jobdir / "results.json").write_text(json.dumps(payload), encoding="utf-8")
-        norm_wav.unlink(missing_ok=True)
         vol.commit()
         _set_status(job_id, status="done", stage="done", percent=100, results_ready=True)
         print(f"[analyze] {job_id} done: {len(results)} swings graded")

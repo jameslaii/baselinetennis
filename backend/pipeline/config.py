@@ -84,7 +84,6 @@ LM = {
 STROKE_MIN_GAP_SEC = 1.3
 STROKE_SPEED_PERCENTILE = 80
 STROKE_WINDOW_SEC = 1.0
-AUDIO_SNAP_TOL_SEC = 0.25
 
 # FH/BH midline classification defaults (kept for compute_angles compatibility;
 # the service classifies wings by inter-wrist gap instead — see grading.wing_of).

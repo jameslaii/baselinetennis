@@ -500,7 +500,7 @@
       <ul>
         <li><b>Behind the baseline</b>, phone landscape, slightly elevated if you can.</li>
         <li><b>Full body in frame</b> the whole time — closer is better than wider.</li>
-        <li><b>Sound on</b> — we snap contact frames to the ball "pock".</li>
+        <li><b>Ball visible</b> — we track the ball to verify every swing actually hit it.</li>
         <li><b>Rally or basket feeds</b>, not self-feed tosses.</li>
         <li>Forehands and two-handed backhands are graded (one-handers coming later).</li>
       </ul>
@@ -645,7 +645,7 @@
     <div class="scan-stages" id="an-stages">
       <div class="scan-row" data-stages="normalizing"><span class="tick"></span><span>Preparing video</span></div>
       <div class="scan-row" data-stages="extracting_pose"><span class="tick"></span><span>Detecting pose, frame by frame</span></div>
-      <div class="scan-row" data-stages="detecting_strokes,filtering_wing"><span class="tick"></span><span>Finding contact frames</span></div>
+      <div class="scan-row" data-stages="detecting_strokes,verifying_hits,filtering_wing"><span class="tick"></span><span>Tracking the ball, verifying real hits</span></div>
       <div class="scan-row" data-stages="grading,aggregating"><span class="tick"></span><span id="an-grade-line">Grading vs the pro</span></div>
     </div>
     <p class="sub" style="margin-top:14px">This takes a few minutes — keep the tab open, background is fine.</p>
@@ -673,6 +673,7 @@
       <div class="vp-sub" id="rp-verdict-sub"></div>
       <div class="vp-typ" id="rp-typical" hidden></div>
       <div class="vp-typ" id="rp-form-line" hidden style="color: var(--muted)"></div>
+      <div class="vp-typ" id="rp-ballgate" hidden style="color: var(--muted)"></div>
     </div>
 
     <div class="crit-grid">

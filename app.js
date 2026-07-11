@@ -374,7 +374,7 @@
   }
 
   function renderStages(stage) {
-    var order = ["normalizing", "extracting_pose", "detecting_strokes", "filtering_wing", "grading", "aggregating", "done"];
+    var order = ["normalizing", "extracting_pose", "detecting_strokes", "verifying_hits", "filtering_wing", "grading", "aggregating", "done"];
     var idx = order.indexOf(stage);
     document.querySelectorAll("#an-stages .scan-row").forEach(function (row) {
       var stages = row.getAttribute("data-stages").split(",");
@@ -405,8 +405,10 @@
     $("rp-eyebrow").textContent = "Session Report · " + (res.created_at || "").slice(0, 10);
     $("rp-title").textContent = strokeName + " vs " + res.benchmark.display;
     $("rp-verdict").textContent = agg.verdict.label;
-    $("rp-verdict-sub").textContent = agg.good_hand_path + " of " + agg.n +
+    var verdictSub = agg.good_hand_path + " of " + agg.n +
       " graded swings rated GOOD on hand path";
+    if (q && q.ball_gate_active) verdictSub += " · ball-verified";
+    $("rp-verdict-sub").textContent = verdictSub;
 
     // typical vs best (schema 2+; older saved reports simply skip it)
     var dist = agg.distribution;
@@ -433,6 +435,17 @@
       }
       $("rp-form-line").textContent = parts.join(" · ");
       $("rp-form-line").hidden = false;
+    }
+
+    // ball-gate: how many candidate swings never touched a ball (schema 3+)
+    var bg = $("rp-ballgate");
+    if (bg) {
+      bg.hidden = true;
+      if (q && q.ball_gate_active && q.strokes_no_ball > 0) {
+        bg.textContent = q.strokes_no_ball + " practice swing" +
+          (q.strokes_no_ball === 1 ? "" : "s") + " ignored — no ball contact seen";
+        bg.hidden = false;
+      }
     }
 
     // warnings
@@ -521,7 +534,7 @@
     warns.forEach(function (w) {
       if (w.code === "low_pose_pct") filmTip = "Next clip: film closer — you were hard to see in this one.";
       if (w.code === "few_strokes" && !filmTip) filmTip = "Next clip: a longer hitting block gives a fairer report.";
-      if (w.code === "no_audio" && !filmTip) filmTip = "Next clip: keep the sound on — the ball 'pock' sharpens contact detection.";
+      if (w.code === "ball_untracked" && !filmTip) filmTip = "Next clip: film closer or more side-on — when the ball is visible, every swing gets verified as a real hit.";
     });
     if (filmTip) {
       $("rp-film").textContent = "Filming · " + filmTip;

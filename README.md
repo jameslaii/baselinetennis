@@ -15,9 +15,11 @@ index.html + app.js          static frontend on Vercel (no framework, no build s
 backend/modal_app.py         Modal app "baseline" (workspace jameslaii)
   ├─ api          FastAPI: upload validation, job status, reel request/serve
   ├─ analyze      worker (8 CPU): ffmpeg normalize -> MediaPipe pose ->
-  │               stroke detection -> wing classify -> grade EVERY matching
-  │               swing (evenly time-spaced cap 30) -> heavy re-grade ->
-  │               results JSON (schema 2, with per-swing skeletons)
+  │               stroke candidates (wrist-speed peaks) -> VISION BALL-GATE
+  │               (verify each candidate actually struck a ball; re-anchor
+  │               contact on the ball's direction change) -> wing classify ->
+  │               grade EVERY matching swing (evenly time-spaced cap 30) ->
+  │               heavy re-grade -> results JSON (schema 3, per-swing skeletons)
   └─ render_reel  worker: slow-mo handpath reel (reuses the heavy pose cache,
                   ~1-3 min), served via a per-job random token
 backend/pipeline/            analysis code vendored from the tennis-coach desktop project
@@ -33,6 +35,14 @@ backend/pipeline/            analysis code vendored from the tennis-coach deskto
 - Grading is distribution-honest: v1 graded the top-10 swings *by score* which
   flattered the averages; v2 grades every matching swing (evenly time-spaced
   subset if >30) and reports typical-vs-best.
+- Contact detection is pure vision (v4): the old audio "pock" snapping is gone —
+  it was inaudible outdoors and never verified a hit. `pipeline/ballgate.py`
+  re-reads a short window around each wrist-speed peak, tracks small fast-moving
+  blobs (three-frame differencing, player core masked, thresholds scaled by
+  player size and fps) and calls a swing a HIT only when a trajectory enters
+  racket reach and changes direction there. The gate is adaptive: if almost no
+  candidates verify, the ball probably isn't visible (far camera / blur), so all
+  swings are kept with a loud `ball_untracked` warning instead of failing.
 
 ## v3 metrics (SwingVision-inspired, pose-honest)
 
@@ -85,7 +95,9 @@ C:\Users\james\tennis-coach\.venv\Scripts\python.exe backend\smoke_test.py
   one-handed backhands would misclassify as forehands).
 - Benchmarks with real measured references: Alcaraz (knee 135°), Eala (134°).
   Adding a pro = one court-level clip through the desktop `make_reference.py`.
-- No ball tracking: shot placement/depth/spin (SwingVision-style) are out of
-  reach for a pose-only pipeline and deliberately not faked.
+- Ball tracking is classical CV and used ONLY to verify hits and anchor contact
+  frames — good enough for gating, not for shot placement/depth/spin
+  (SwingVision-style), which stay deliberately unfaked. A learned tracker
+  (TrackNet) is the upgrade path if the gate needs more reach.
 - Hip–shoulder separation (X-factor) deferred until per-pro reference values
   are measured — next reference-clip task.
