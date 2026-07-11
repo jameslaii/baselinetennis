@@ -79,6 +79,13 @@
     renderProgress(list);
   }
 
+  // Backing-store scale for crisp canvas rendering on high-DPI screens.
+  // All drawing math stays in the logical (CSS attribute) coordinate space.
+  function canvasDpr() {
+    var r = window.devicePixelRatio || 1;
+    return Math.max(1, Math.min(3, r));
+  }
+
   // Home-screen progress: avg hand-path score per session, oldest -> newest
   function renderProgress(list) {
     var pts = list.filter(function (j) { return j.metrics && j.metrics.avg_score != null; })
@@ -86,30 +93,64 @@
     $("prog-wrap").hidden = pts.length < 2;
     if (pts.length < 2) return;
     var cv = $("prog-canvas");
+    var W = 330, H = 64;
+    var dpr = canvasDpr();
+    cv.width = W * dpr;              // resizing also clears the canvas
+    cv.height = H * dpr;
     var ctx = cv.getContext("2d");
-    ctx.clearRect(0, 0, cv.width, cv.height);
-    var pad = 10, W = cv.width, H = cv.height;
-    function sx(i) { return pad + (W - 2 * pad) * i / (pts.length - 1); }
-    function sy(v) { return H - pad - (H - 2 * pad) * Math.max(0, Math.min(1, v)); }
-    // faint grid line at 0.5
-    ctx.strokeStyle = "rgba(154,163,178,0.18)";
+    ctx.scale(dpr, dpr);
+    var padY = 10;
+    var padX = pts.length === 2 ? 56 : 12;   // just two sessions: pull in from the edges
+    function sx(i) { return padX + (W - 2 * padX) * i / (pts.length - 1); }
+    function sy(v) { return H - padY - (H - 2 * padY) * Math.max(0, Math.min(1, v)); }
+    // faint dotted midline at 0.5
+    ctx.strokeStyle = "rgba(154,163,178,0.24)";
     ctx.lineWidth = 1;
-    ctx.beginPath(); ctx.moveTo(pad, sy(0.5)); ctx.lineTo(W - pad, sy(0.5)); ctx.stroke();
+    ctx.setLineDash([2, 5]);
+    ctx.beginPath(); ctx.moveTo(6, sy(0.5)); ctx.lineTo(W - 6, sy(0.5)); ctx.stroke();
+    ctx.setLineDash([]);
+    // soft area fill under the score line
+    var base = H - 4;
+    var grad = ctx.createLinearGradient(0, padY, 0, base);
+    grad.addColorStop(0, "rgba(201,169,97,0.26)");
+    grad.addColorStop(1, "rgba(201,169,97,0)");
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(sx(0), base);
+    pts.forEach(function (j, i) { ctx.lineTo(sx(i), sy(j.metrics.avg_score)); });
+    ctx.lineTo(sx(pts.length - 1), base);
+    ctx.closePath();
+    ctx.fill();
     // score line
     ctx.strokeStyle = "#C9A961";
     ctx.lineWidth = 2;
     ctx.lineCap = "round";
+    ctx.lineJoin = "round";
     ctx.beginPath();
     pts.forEach(function (j, i) {
       var x = sx(i), y = sy(j.metrics.avg_score);
       if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
     });
     ctx.stroke();
+    // points: gold history dots, emphasized ringed amber endpoint
     pts.forEach(function (j, i) {
-      ctx.fillStyle = i === pts.length - 1 ? "#FFB84D" : "#C9A961";
-      ctx.beginPath();
-      ctx.arc(sx(i), sy(j.metrics.avg_score), i === pts.length - 1 ? 3.4 : 2.4, 0, Math.PI * 2);
-      ctx.fill();
+      var x = sx(i), y = sy(j.metrics.avg_score);
+      if (i === pts.length - 1) {
+        ctx.strokeStyle = "rgba(255,184,77,0.45)";
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.arc(x, y, 5.6, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.fillStyle = "#FFB84D";
+        ctx.beginPath();
+        ctx.arc(x, y, 3.2, 0, Math.PI * 2);
+        ctx.fill();
+      } else {
+        ctx.fillStyle = "#C9A961";
+        ctx.beginPath();
+        ctx.arc(x, y, 2.2, 0, Math.PI * 2);
+        ctx.fill();
+      }
     });
     var cur = pts[pts.length - 1].metrics, prev = pts[pts.length - 2].metrics;
     var bits = ["avg swing " + Math.round(cur.avg_score * 100) + "%"];
@@ -638,7 +679,12 @@
     runSkeleton(cv, swing.skeleton, res);
   }
   function runSkeleton(cv, skel, res) {
+    var W = 300, H = 220;            // logical drawing space (CSS keeps the layout size)
+    var dpr = canvasDpr();
+    cv.width = W * dpr;
+    cv.height = H * dpr;
     var ctx = cv.getContext("2d");
+    ctx.scale(dpr, dpr);
     var conns = res.skeleton_connections;
     var wristI = res.skeleton_wrist_i || 0;
     var vw = (res.video && res.video.width) || 1920;
@@ -658,11 +704,18 @@
     });
     if (!isFinite(minX)) return;
     var pad = 18;
-    var scale = Math.min((cv.width - 2 * pad) / Math.max(1, maxX - minX),
-                         (cv.height - 2 * pad) / Math.max(1, maxY - minY));
-    var offX = (cv.width - (maxX - minX) * scale) / 2 - minX * scale;
-    var offY = (cv.height - (maxY - minY) * scale) / 2 - minY * scale;
+    var scale = Math.min((W - 2 * pad) / Math.max(1, maxX - minX),
+                         (H - 2 * pad) / Math.max(1, maxY - minY));
+    var offX = (W - (maxX - minX) * scale) / 2 - minX * scale;
+    var offY = (H - (maxY - minY) * scale) / 2 - minY * scale;
     function px(p) { return [p[0] * vw * scale + offX, p[1] * vh * scale + offY]; }
+
+    // joint hierarchy: hubs where 3+ bones meet (shoulders/hips) get larger dots
+    var degree = [];
+    conns.forEach(function (c) {
+      degree[c[0]] = (degree[c[0]] || 0) + 1;
+      degree[c[1]] = (degree[c[1]] || 0) + 1;
+    });
 
     function markerFrame(i) {
       // nearest present frame at or before i (marker may land on a null frame)
@@ -676,54 +729,104 @@
     ];
 
     function draw(upto) {
-      ctx.clearRect(0, 0, cv.width, cv.height);
-      // wrist trail up to the current frame
-      ctx.strokeStyle = "#FFB84D";
-      ctx.lineWidth = 2.2;
+      ctx.clearRect(0, 0, W, H);
       ctx.lineCap = "round";
-      ctx.beginPath();
-      var started = false;
+      ctx.lineJoin = "round";
+
+      // wrist trail: older segments fade out, the recent stretch gets a soft glow
+      var trail = [];
       for (var i = 0; i <= upto && i < frames.length; i++) {
-        if (!frames[i]) continue;
-        var w = px(frames[i][wristI]);
-        if (!started) { ctx.moveTo(w[0], w[1]); started = true; }
-        else ctx.lineTo(w[0], w[1]);
+        if (frames[i]) trail.push(px(frames[i][wristI]));
       }
-      ctx.stroke();
-      // markers already passed
+      var n = trail.length, s, t;
+      for (s = 1; s < n; s++) {
+        t = s / n;
+        ctx.strokeStyle = "rgba(255,184,77," + (0.08 + 0.5 * t * t).toFixed(3) + ")";
+        ctx.lineWidth = 1.1 + 1.3 * t;
+        ctx.beginPath();
+        ctx.moveTo(trail[s - 1][0], trail[s - 1][1]);
+        ctx.lineTo(trail[s][0], trail[s][1]);
+        ctx.stroke();
+      }
+      if (n > 1) {
+        var gf = Math.max(0, n - 7);
+        ctx.shadowColor = "rgba(255,184,77,0.6)";
+        ctx.shadowBlur = 6;
+        ctx.strokeStyle = "#FFB84D";
+        ctx.lineWidth = 2.2;
+        ctx.beginPath();
+        ctx.moveTo(trail[gf][0], trail[gf][1]);
+        for (s = gf + 1; s < n; s++) ctx.lineTo(trail[s][0], trail[s][1]);
+        ctx.stroke();
+        ctx.shadowBlur = 0;   // shadows are expensive: reset immediately
+      }
+
+      // markers already passed: ring + fill dot, label kept inside the canvas
       markers.forEach(function (m) {
         if (upto < m.i) return;
         var mf = markerFrame(m.i);
         if (!mf) return;
         var w = px(mf[wristI]);
+        ctx.strokeStyle = m.color;
+        ctx.lineWidth = 1;
+        ctx.globalAlpha = 0.55;
+        ctx.beginPath();
+        ctx.arc(w[0], w[1], 5.4, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
         ctx.fillStyle = m.color;
         ctx.beginPath();
-        ctx.arc(w[0], w[1], 3.2, 0, Math.PI * 2);
+        ctx.arc(w[0], w[1], 2.6, 0, Math.PI * 2);
         ctx.fill();
-        ctx.font = "7px ui-monospace, Consolas, monospace";
+        ctx.font = "600 8px ui-monospace, Consolas, monospace";
         ctx.textAlign = "center";
-        ctx.fillText(m.label, Math.min(cv.width - 20, Math.max(20, w[0])), Math.min(cv.height - 4, w[1] + 12));
+        ctx.globalAlpha = 0.9;
+        ctx.fillText(m.label,
+          Math.min(W - 26, Math.max(26, w[0])),
+          w[1] + 17 > H - 8 ? w[1] - 10 : w[1] + 17);
+        ctx.globalAlpha = 1;
       });
+
       // skeleton for the current frame
       var f = frames[upto] || markerFrame(upto);
       if (f) {
-        ctx.strokeStyle = "#3DDC84";
+        ctx.strokeStyle = "rgba(61,220,132,0.8)";
         ctx.lineWidth = 2;
+        ctx.beginPath();
         conns.forEach(function (c) {
           var a = px(f[c[0]]), b = px(f[c[1]]);
-          ctx.beginPath();
           ctx.moveTo(a[0], a[1]);
           ctx.lineTo(b[0], b[1]);
-          ctx.stroke();
         });
-        ctx.fillStyle = "#F3EDE0";
-        f.forEach(function (p) {
+        ctx.stroke();
+        f.forEach(function (p, j) {
           var w = px(p);
-          ctx.beginPath();
-          ctx.arc(w[0], w[1], 1.6, 0, Math.PI * 2);
-          ctx.fill();
+          if (j === wristI) {
+            // dominant wrist: amber core with a halo ring
+            ctx.strokeStyle = "rgba(255,184,77,0.55)";
+            ctx.lineWidth = 1.2;
+            ctx.beginPath();
+            ctx.arc(w[0], w[1], 4.6, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.fillStyle = "#FFB84D";
+            ctx.beginPath();
+            ctx.arc(w[0], w[1], 2.6, 0, Math.PI * 2);
+            ctx.fill();
+          } else {
+            ctx.fillStyle = "rgba(243,237,224,0.92)";
+            ctx.beginPath();
+            ctx.arc(w[0], w[1], (degree[j] || 1) >= 3 ? 2.3 : 1.5, 0, Math.PI * 2);
+            ctx.fill();
+          }
         });
       }
+
+      // progress tick along the bottom edge showing loop position
+      ctx.fillStyle = "rgba(154,163,178,0.16)";
+      ctx.fillRect(10, H - 3, W - 20, 1.5);
+      var pr = frames.length > 1 ? Math.min(1, upto / (frames.length - 1)) : 0;
+      ctx.fillStyle = "#FFB84D";
+      ctx.fillRect(10 + (W - 28) * pr, H - 4, 8, 3);
     }
 
     if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) {
@@ -753,6 +856,28 @@
     replay.raf = requestAnimationFrame(tick);
   }
 
+  // SVG element factory (createElementNS + attribute bag)
+  function svgEl(name, attrs) {
+    var el = document.createElementNS("http://www.w3.org/2000/svg", name);
+    for (var k in attrs) if (attrs.hasOwnProperty(k)) el.setAttribute(k, attrs[k]);
+    return el;
+  }
+
+  // Catmull-Rom spline through screen points -> cubic Bézier path data
+  function smoothPathD(p) {
+    var d = "M" + p[0][0].toFixed(1) + " " + p[0][1].toFixed(1);
+    for (var i = 0; i < p.length - 1; i++) {
+      var p0 = p[i - 1] || p[i];
+      var p1 = p[i];
+      var p2 = p[i + 1];
+      var p3 = p[i + 2] || p2;
+      d += " C" + (p1[0] + (p2[0] - p0[0]) / 6).toFixed(1) + " " + (p1[1] + (p2[1] - p0[1]) / 6).toFixed(1) +
+           " " + (p2[0] - (p3[0] - p1[0]) / 6).toFixed(1) + " " + (p2[1] - (p3[1] - p1[1]) / 6).toFixed(1) +
+           " " + p2[0].toFixed(1) + " " + p2[1].toFixed(1);
+    }
+    return d;
+  }
+
   function drawHandPath(swing) {
     var svg = $("rp-path-svg");
     svg.textContent = "";
@@ -762,42 +887,93 @@
     var ys = pts.map(function (p) { return p[1]; });
     var minX = Math.min.apply(null, xs), maxX = Math.max.apply(null, xs);
     var minY = Math.min.apply(null, ys), maxY = Math.max.apply(null, ys);
-    var pad = 8, W = 300, H = 86;
+    var pad = 9, W = 300, H = 86;
     function sx(x) { return pad + (W - 2 * pad) * (x - minX) / ((maxX - minX) || 1); }
     function sy(y) { return H - pad - (H - 2 * pad) * (y - minY) / ((maxY - minY) || 1); }
-    var ns = "http://www.w3.org/2000/svg";
+    var scr = pts.map(function (p) { return [sx(p[0]), sy(p[1])]; });
+
+    // stroke gradient: heritage gold at the takeback side -> amber at the finish side
+    var defs = svgEl("defs", {});
+    var grad = svgEl("linearGradient", {
+      id: "hp-grad", gradientUnits: "userSpaceOnUse", x1: 0, y1: 0, x2: W, y2: 0,
+    });
+    grad.appendChild(svgEl("stop", { offset: "0", "stop-color": "#C9A961" }));
+    grad.appendChild(svgEl("stop", { offset: "1", "stop-color": "#FFB84D" }));
+    defs.appendChild(grad);
+    svg.appendChild(defs);
+
+    // faint baseline grid
+    [0.25, 0.5, 0.75].forEach(function (fy) {
+      svg.appendChild(svgEl("line", {
+        x1: 0, x2: W, y1: (H * fy).toFixed(1), y2: (H * fy).toFixed(1),
+        stroke: "rgba(154,163,178,0.09)", "stroke-width": 1,
+      }));
+    });
+    [0.25, 0.5, 0.75].forEach(function (fx) {
+      svg.appendChild(svgEl("line", {
+        x1: (W * fx).toFixed(1), x2: (W * fx).toFixed(1), y1: 0, y2: H,
+        stroke: "rgba(154,163,178,0.06)", "stroke-width": 1,
+      }));
+    });
 
     // contact plane line at y=0 (the contact point's height)
     if (minY < 0 && maxY > 0) {
-      var line = document.createElementNS(ns, "line");
-      line.setAttribute("x1", 0); line.setAttribute("x2", W);
-      line.setAttribute("y1", sy(0)); line.setAttribute("y2", sy(0));
-      line.setAttribute("stroke", "#2B2F38"); line.setAttribute("stroke-width", "1");
-      svg.appendChild(line);
+      svg.appendChild(svgEl("line", {
+        x1: 0, x2: W, y1: sy(0).toFixed(1), y2: sy(0).toFixed(1),
+        stroke: "rgba(243,237,224,0.16)", "stroke-width": 1, "stroke-dasharray": "3 4",
+      }));
     }
-    var d = pts.map(function (p, i) { return (i ? "L" : "M") + sx(p[0]).toFixed(1) + " " + sy(p[1]).toFixed(1); }).join(" ");
-    var path = document.createElementNS(ns, "path");
-    path.setAttribute("d", d);
-    path.setAttribute("fill", "none");
-    path.setAttribute("stroke", "#FFB84D");
-    path.setAttribute("stroke-width", "2.6");
-    path.setAttribute("stroke-linecap", "round");
-    svg.appendChild(path);
 
+    // layered strokes: wide low-opacity underglow beneath the main gradient line
+    var d = smoothPathD(scr);
+    [["#FFB84D", 7, 0.1], ["#FFB84D", 4, 0.16], ["url(#hp-grad)", 2.4, 1]].forEach(function (s) {
+      svg.appendChild(svgEl("path", {
+        d: d, fill: "none", stroke: s[0], "stroke-width": s[1], opacity: s[2],
+        "stroke-linecap": "round", "stroke-linejoin": "round",
+      }));
+    });
+
+    // markers: ring + fill dot, label pushed to the empty side of the local path
+    var placed = [];
     [["low", swing.hand_path.low], ["contact", swing.hand_path.contact], ["finish", swing.hand_path.finish]]
       .forEach(function (m) {
         if (!m[1]) return;
-        var c = document.createElementNS(ns, "circle");
-        c.setAttribute("cx", sx(m[1][0])); c.setAttribute("cy", sy(m[1][1])); c.setAttribute("r", "3.4");
-        c.setAttribute("fill", m[0] === "contact" ? "#F3EDE0" : "#3DDC84");
-        svg.appendChild(c);
-        var t = document.createElementNS(ns, "text");
-        t.setAttribute("x", Math.min(W - 24, Math.max(10, sx(m[1][0]))));
-        t.setAttribute("y", Math.min(H - 3, sy(m[1][1]) + 14));
-        t.setAttribute("font-size", "7");
-        t.setAttribute("font-family", "SF Mono, ui-monospace, Consolas, monospace");
-        t.setAttribute("fill", m[0] === "contact" ? "#F3EDE0" : "#3DDC84");
-        t.setAttribute("text-anchor", "middle");
+        var mx = sx(m[1][0]), my = sy(m[1][1]);
+        var color = m[0] === "contact" ? "#F3EDE0" : "#3DDC84";
+        svg.appendChild(svgEl("circle", {
+          cx: mx.toFixed(1), cy: my.toFixed(1), r: 5.2,
+          fill: "none", stroke: color, "stroke-width": 1, opacity: 0.55,
+        }));
+        svg.appendChild(svgEl("circle", {
+          cx: mx.toFixed(1), cy: my.toFixed(1), r: 2.6, fill: color,
+        }));
+        // find the marker's nearest path point, average the neighbours' height,
+        // and place the label on the side the path bends away from
+        var ni = 0, nd = Infinity, i, dx, dy, dd;
+        for (i = 0; i < scr.length; i++) {
+          dx = scr[i][0] - mx; dy = scr[i][1] - my; dd = dx * dx + dy * dy;
+          if (dd < nd) { nd = dd; ni = i; }
+        }
+        var sum = 0, cnt = 0;
+        for (i = Math.max(0, ni - 3); i <= Math.min(scr.length - 1, ni + 3); i++) {
+          if (i === ni) continue;
+          sum += scr[i][1]; cnt++;
+        }
+        var below = cnt > 0 && (sum / cnt) <= my;   // path body sits above -> label below
+        var lx = Math.min(W - 22, Math.max(22, mx));
+        var ly = Math.min(H - 3, Math.max(9, below ? my + 16 : my - 10));
+        for (i = 0; i < placed.length; i++) {
+          if (Math.abs(placed[i][0] - lx) < 46 && Math.abs(placed[i][1] - ly) < 9) {
+            ly = Math.min(H - 3, Math.max(9, ly + (below ? 9 : -9)));
+          }
+        }
+        placed.push([lx, ly]);
+        var t = svgEl("text", {
+          x: lx.toFixed(1), y: ly.toFixed(1),
+          "font-size": 8, "letter-spacing": "0.14em",
+          "font-family": "SF Mono, ui-monospace, Consolas, monospace",
+          fill: color, opacity: 0.9, "text-anchor": "middle",
+        });
         t.textContent = m[0].toUpperCase();
         svg.appendChild(t);
       });
