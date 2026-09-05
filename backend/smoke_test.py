@@ -93,8 +93,9 @@ def test_auto_james():
     hf = {f: f for f in range(sess["norm"].shape[0])}
     speeds = [grading.swing_speed_kmh(a, hf, sess["world"], fps) for a in results]
     fronts = [grading.contact_front_cm(a, hf, sess["world"]) for a in results]
+    # side-on: depth metrics are measurable, so the blocks carry numbers
     agg = grading.aggregate(results, grading.REF_NAME, grading.REF_KNEE,
-                            speeds=speeds, fronts=fronts)
+                            speeds=speeds, fronts=fronts, view="side")
     paths = [grading.hand_path_points(a, hf, sess["norm"], W, H) for a in results]
     skels = [grading.skeleton_frames(a, hf, sess["norm"]) for a in results]
     n_pts = [len(p["points"]) for p in paths]
@@ -123,6 +124,29 @@ def test_auto_james():
     print(f"  speed block: {agg['speed']}")
     print(f"  front block: {agg['contact_front']}")
     print(f"  plan focus: {[(f['key'], f['count']) for f in agg['plan']['focus']]}")
+
+    # view gating: from behind/in front, the depth metrics must refuse to
+    # report a number rather than print one the geometry can't support
+    view_ok = True
+    for v in ("back", "front"):
+        a2 = grading.aggregate(results, grading.REF_NAME, grading.REF_KNEE,
+                               speeds=speeds, fronts=fronts, view=v)
+        gated = (a2["speed"]["supported"] is False
+                 and a2["contact_front"]["supported"] is False
+                 and "max_kmh" not in a2["speed"]
+                 and "avg_cm" not in a2["contact_front"]
+                 and a2["speed"]["needs_view"] == "side"
+                 # the height-derived tiles must be untouched by view
+                 and a2["tiles"] == agg["tiles"]
+                 and a2["verdict"] == agg["verdict"]
+                 and not any(f["key"] == "late contact point"
+                             for f in a2["plan"]["focus"]))
+        print(f"  view={v}: depth metrics gated, height tiles unchanged -> {gated}")
+        view_ok = view_ok and gated
+    assert agg["speed"]["supported"] is True and "max_kmh" in agg["speed"], \
+        "side-on view must still report hand speed"
+    print(f"  VIEW GATING {'PASS' if view_ok else 'FAIL'}")
+    assert view_ok, "view gating failed"
     v3_ok = (len(sp) >= len(speeds) * 0.6 and all(5 <= s <= 60 for s in sp)
              and np.mean(sp) >= 10
              and len(fr) >= len(fronts) * 0.5

@@ -30,6 +30,7 @@ MAX_BYTES = 500 * 1024 * 1024      # hard upload cap
 MAX_DURATION_S = 250               # "1-4 minute clips" + slack
 DAILY_JOB_CAP = 15
 BENCHMARKS = {"alcaraz": "Carlos Alcaraz", "eala": "Alex Eala"}
+BENCH_VIEWS = ("back", "side", "front")   # camera position, declared by the user
 
 VOL_PATH = Path("/data")
 vol = modal.Volume.from_name("baseline-videos", create_if_missing=True)
@@ -165,6 +166,7 @@ def api():
         handedness: str = Query(...),
         stroke: str = Query(...),
         benchmark: str = Query(...),
+        view: str = Query("back"),
         x_invite_code: str | None = Header(default=None),
     ):
         check_invite(x_invite_code)
@@ -172,6 +174,11 @@ def api():
             raise HTTPException(422, detail={"code": "bad_param", "message": "handedness must be left or right"})
         if stroke not in ("forehand", "backhand"):
             raise HTTPException(422, detail={"code": "bad_param", "message": "stroke must be forehand or backhand"})
+        # Declared by the user, not detected — see grading.VIEWS for why.
+        # Defaults to "back", which is what the filming guide asks for.
+        if view not in BENCH_VIEWS:
+            raise HTTPException(422, detail={"code": "bad_param",
+                                             "message": "view must be back, side or front"})
         if benchmark not in BENCHMARKS:
             raise HTTPException(422, detail={"code": "bad_param", "message": "benchmark must be alcaraz or eala"})
 
@@ -217,7 +224,8 @@ def api():
                                              "message": f"Clip is {duration:.0f}s - trim it to 4 minutes or less."})
 
         jobs.put(quota_key, (jobs.get(quota_key) or 0) + 1)
-        params = {"handedness": handedness, "stroke": stroke, "benchmark": benchmark}
+        params = {"handedness": handedness, "stroke": stroke,
+                  "benchmark": benchmark, "view": view}
         jobs.put(job_id, {"status": "queued", "stage": "queued", "percent": 1,
                           "params": params, "created_at": _utc_now()})
         vol.commit()
@@ -470,8 +478,14 @@ def analyze(job_id: str, params: dict):
 
         # ---- 6. aggregate ---------------------------------------------------
         stage("aggregating", 96)
+        view = params.get("view", "back")
         agg = grading.aggregate(results, grading.REF_NAME, ref_knee,
-                                speeds=speeds, fronts=fronts)
+                                speeds=speeds, fronts=fronts, view=view)
+        if view != "side":
+            warn("view_limits_depth",
+                 "Filmed from " + ("in front" if view == "front" else "behind") +
+                 ", so swing speed and contact point can't be measured - they run "
+                 "along the camera's line of sight. Add a side-on clip for those.")
         payload = {
             "schema_version": 3,
             "job_id": job_id,

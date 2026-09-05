@@ -19,6 +19,7 @@
     duration: null,
     hand: "",
     stroke: "forehand",
+    view: "back",
     benchmark: "alcaraz",
     benchmarkDisplay: "Carlos Alcaraz",
     xhr: null,
@@ -262,6 +263,7 @@
   }
   segWire("seg-hand", "hand");
   segWire("seg-stroke", "stroke");
+  segWire("seg-view", "view");
 
   $("pro-list").addEventListener("click", function (e) {
     var card = e.target.closest(".pro-card");
@@ -305,6 +307,7 @@
 
     var q = "?handedness=" + encodeURIComponent(state.hand) +
             "&stroke=" + encodeURIComponent(state.stroke) +
+            "&view=" + encodeURIComponent(state.view) +
             "&benchmark=" + encodeURIComponent(state.benchmark);
     var xhr = new XMLHttpRequest();
     state.xhr = xhr;
@@ -498,14 +501,24 @@
     var chLabel = ch.in_zone >= agg.n * 0.6 ? "IN ZONE" : (ch.low > ch.high_late ? ch.low + " LOW" : ch.high_late + " HIGH/LATE");
     chip($("rp-ch-chip"), chLabel, ch.in_zone >= agg.n * 0.6 ? "good" : "ok");
 
-    // v3 tiles: hand speed + contact-out-front (older reports simply hide them)
-    $("rp-speed-tile").hidden = !(agg.speed && agg.speed.max_kmh != null);
-    if (agg.speed && agg.speed.max_kmh != null) {
+    // v3 tiles: hand speed + contact-out-front (older reports simply hide them).
+    // Both are depth measurements — from behind or in front the swing runs along
+    // the camera axis, so the tile says what to film instead of showing a number.
+    var speedGated = agg.speed && agg.speed.supported === false;
+    $("rp-speed-tile").hidden = !(agg.speed && (agg.speed.max_kmh != null || speedGated));
+    if (speedGated) {
+      $("rp-speed").innerHTML = '<small>needs a side-on clip</small>';
+      chip($("rp-speed-chip"), "SIDE VIEW", "ok");
+    } else if (agg.speed && agg.speed.max_kmh != null) {
       $("rp-speed").innerHTML = Math.round(agg.speed.max_kmh) + ' <small>km/h peak · avg ' +
         Math.round(agg.speed.avg_kmh) + "</small>";
     }
-    $("rp-front-tile").hidden = !(agg.contact_front && agg.contact_front.measured);
-    if (agg.contact_front && agg.contact_front.measured) {
+    var frontGated = agg.contact_front && agg.contact_front.supported === false;
+    $("rp-front-tile").hidden = !(agg.contact_front && (agg.contact_front.measured || frontGated));
+    if (frontGated) {
+      $("rp-front").innerHTML = '<small>needs a side-on clip</small>';
+      chip($("rp-front-chip"), "SIDE VIEW", "ok");
+    } else if (agg.contact_front && agg.contact_front.measured) {
       var cf = agg.contact_front;
       $("rp-front").innerHTML = cf.out_front + "/" + cf.measured + ' <small>out front</small>';
       var cfGood = cf.out_front >= cf.measured * 0.5;
@@ -563,6 +576,7 @@
       if (w.code === "low_pose_pct") filmTip = "Next clip: film closer — you were hard to see in this one.";
       if (w.code === "few_strokes" && !filmTip) filmTip = "Next clip: a longer hitting block gives a fairer report.";
       if (w.code === "ball_untracked" && !filmTip) filmTip = "Next clip: film closer or more side-on — when the ball is visible, every swing gets verified as a real hit.";
+      if (w.code === "view_limits_depth" && !filmTip) filmTip = "Add a side-on clip to unlock swing speed and contact point — this angle can't see them.";
     });
     if (filmTip) {
       $("rp-film").textContent = "Filming · " + filmTip;

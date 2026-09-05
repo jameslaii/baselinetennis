@@ -253,6 +253,7 @@
 
   .field { margin-top: 18px; }
   .field .k { display: block; margin-bottom: 8px; }
+  .field .hint { display: block; font-size: 10.5px; line-height: 1.5; color: var(--muted); margin-top: 7px; }
   .segmented { display: flex; background: #14161B; border-radius: 12px; padding: 3px;
                border: 1px solid var(--line); box-shadow: inset 0 2px 5px rgba(0, 0, 0, 0.35); }
   .segmented button {
@@ -557,6 +558,17 @@
         <button type="button" data-v="forehand" class="on">Forehand</button>
         <button type="button" data-v="backhand">Backhand (2H)</button>
       </div>
+    </div>
+
+    <div class="field">
+      <span class="k">Where was the camera?</span>
+      <div class="segmented" id="seg-view" data-value="back">
+        <button type="button" data-v="back" class="on">Behind</button>
+        <button type="button" data-v="side">Side-on</button>
+        <button type="button" data-v="front">In front</button>
+      </div>
+      <div class="hint" id="view-hint">Behind and in front see your turn and stance.
+        Side-on is the only angle that can measure swing speed and contact point.</div>
     </div>
 
     <div class="field">

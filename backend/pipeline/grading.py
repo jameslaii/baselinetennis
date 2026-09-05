@@ -30,6 +30,34 @@ SNAP_SEC = 0.3               # re-pick contact at the fastest wrist frame within
 # When ballgate anchored the contact on the observed ball direction change, trust it more:
 SNAP_SEC_TIGHT = 0.1
 
+# --- camera view -----------------------------------------------------------
+# Which metrics a given camera position can honestly measure.
+#
+# The vertical axis is free from every angle (gravity is in the image plane),
+# so every height-derived metric — racket drop, low-to-high, finish, contact
+# height — holds regardless. Depth never is: hand speed and contact-out-front
+# are 3D world-landmark measurements taken along the swing direction, which
+# from behind or in front of the player is almost exactly the camera's optical
+# axis — the axis a single camera estimates worst.
+#
+# NOTE: this is user-declared, not detected. Automatic view classification was
+# validated against 12 clips with known camera positions and REJECTED — the
+# player rotates through ~180 degrees while playing, so every body-relative
+# signal (shoulder-width/torso ratio at any percentile, face-landmark
+# visibility, shoulder image ordering, world-space torso normal, travel
+# direction) measures the player's own azimuth, not the camera's. Recovering
+# the camera needs a court-fixed reference this pipeline does not have.
+VIEWS = ("back", "side", "front")
+DEPTH_METRICS = ("speed", "contact_front")
+
+
+def view_supports(view: str, metric: str) -> bool:
+    """True if `view` can honestly measure `metric`."""
+    if metric in DEPTH_METRICS:
+        return view == "side"
+    return True
+
+
 REF_NAME = "Alcaraz"
 REF_KNEE = 135.0
 REF_WING = "forehand"        # the wing REF_KNEE was actually measured on
@@ -468,7 +496,8 @@ def _tile_counts(results, key):
 
 
 def aggregate(results: list[dict], ref_name: str, ref_knee: float,
-              speeds: list | None = None, fronts: list | None = None) -> dict:
+              speeds: list | None = None, fronts: list | None = None,
+              view: str = "back") -> dict:
     """Session-level aggregate for the report card (mirrors coach_reel's report logic).
 
     speeds/fronts: optional per-swing hand_speed_kmh / contact_front_cm lists aligned
@@ -525,6 +554,12 @@ def aggregate(results: list[dict], ref_name: str, ref_knee: float,
                    "fade": round(first_avg - last_avg, 2)}
 
     # --- v3: hand speed + contact-front tiles (pose-glitch entries are None) ---
+    # Both are depth measurements. From behind or in front of the player the
+    # swing runs along the camera axis, so we report the tile as unsupported
+    # for that view rather than printing a confident number the geometry
+    # cannot back up.
+    speed_ok = view_supports(view, "speed")
+    front_ok = view_supports(view, "contact_front")
     speed_block = None
     sp = [s for s in (speeds or []) if s is not None]
     if sp:
@@ -534,6 +569,10 @@ def aggregate(results: list[dict], ref_name: str, ref_knee: float,
                        "best_swing_kmh": (speeds[best_i] if best_i is not None
                                           and speeds[best_i] is not None else None),
                        "measured": len(sp)}
+    if speed_block and not speed_ok:
+        speed_block = {"supported": False, "needs_view": "side", "measured": len(sp)}
+    elif speed_block:
+        speed_block["supported"] = True
     front_block = None
     fr = [f for f in (fronts or []) if f is not None]
     if fr:
@@ -542,11 +581,17 @@ def aggregate(results: list[dict], ref_name: str, ref_knee: float,
                        "close": sum(1 for f in fr if 0.0 <= f < 15.0),
                        "behind": sum(1 for f in fr if f < 0.0),
                        "measured": len(fr)}
+    if front_block and not front_ok:
+        front_block = {"supported": False, "needs_view": "side", "measured": len(fr)}
+    elif front_block:
+        front_block["supported"] = True
 
     # --- v3: session plan — top-2 measured issues, plus contact-front if it's rife ---
     focus = [{"key": k, "sentence": PRIORITY_SENTENCES[k], "drill": DRILL_MAP[k],
               "count": c, "of": n} for c, k in issues[:2]]
-    if front_block and front_block["behind"] >= max(2, front_block["measured"] // 3) \
+    # Only prescribe a contact-point drill when the view could actually see it.
+    if front_block and front_block.get("supported") \
+            and front_block["behind"] >= max(2, front_block["measured"] // 3) \
             and len(focus) < 2:
         focus.append({"key": "late contact point",
                       "sentence": "Priority this week: meet the ball further out in front.",
