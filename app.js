@@ -219,7 +219,13 @@
       refreshRunButton();
       return;
     }
-    // read duration from metadata (best effort; server re-checks)
+    // Read duration for display only — NEVER to block the upload.
+    //
+    // The browser reports the CONTAINER duration, which on an iPhone .MOV is
+    // the longest track in the file. Apple's `mebx` metadata tracks keep their
+    // original timestamps through a trim, so a trimmed 90s clip can report ~10
+    // minutes here and get refused before a single byte is sent. The server
+    // measures the video stream itself, so let it be the judge.
     var url = URL.createObjectURL(f);
     var v = document.createElement("video");
     v.preload = "metadata";
@@ -228,19 +234,18 @@
       if (done) return;
       done = true;
       URL.revokeObjectURL(url);
-      if (dur && dur > MAX_DURATION_S) {
-        $("upload-err").textContent = "Clip is " + Math.round(dur) + "s - trim it to 4 minutes or less.";
-        drop.classList.remove("has");
-        $("file-meta").textContent = "";
-        refreshRunButton();
-        return;
-      }
+      var trustworthy = dur && isFinite(dur) && dur > 0;
       state.file = f;
-      state.duration = dur || null;
+      state.duration = trustworthy ? dur : null;
       drop.classList.add("has");
       $("file-cta").textContent = "Video ready";
       $("file-meta").textContent = f.name + " · " + (f.size / 1e6).toFixed(0) + " MB" +
-        (dur ? " · " + Math.round(dur) + "s" : "");
+        (trustworthy ? " · " + Math.round(dur) + "s" : "");
+      if (trustworthy && dur > MAX_DURATION_S) {
+        $("upload-err").textContent = "This looks like " + Math.round(dur) +
+          "s. Clips over 4 minutes are rejected — but phone videos often report " +
+          "the wrong length, so it's worth trying.";
+      }
       refreshRunButton();
     }
     v.onloadedmetadata = function () { finish(v.duration); };
@@ -286,7 +291,7 @@
     show("upload");
   });
 
-  function friendlyHttpError(xhr) {
+  function friendlyHttpError(xhr, sent, total, why) {
     try {
       var body = JSON.parse(xhr.responseText);
       if (body && body.detail && body.detail.message) return body.detail.message;
@@ -294,8 +299,23 @@
     if (xhr.status === 401) return "Invite code was rejected.";
     if (xhr.status === 413) return "Video too large - export at 1080p and retry.";
     if (xhr.status === 429) return "Today's analysis quota is used up - try tomorrow.";
-    if (xhr.status === 0) return "Upload failed - check your connection and retry.";
-    return "Upload failed (HTTP " + xhr.status + ").";
+    if (xhr.status === 0) {
+      // Say what actually happened — "check your connection" is useless when
+      // the real cause is a stalled 300 MB upload or a dropped connection.
+      var mb = function (b) { return (b / 1e6).toFixed(0) + " MB"; };
+      var progress = total
+        ? " Sent " + mb(sent) + " of " + mb(total) +
+          " (" + Math.round(100 * sent / total) + "%)."
+        : "";
+      if (why === "timeout") return "Upload timed out." + progress +
+        " A big clip on a slow connection can stall - try a shorter or smaller export.";
+      if (sent && total && sent >= total) return "The video finished uploading but the " +
+        "server didn't answer." + progress + " Wait a moment and retry.";
+      return "Upload stopped before it finished." + progress +
+        " Usually the connection dropped - retry, ideally on wifi.";
+    }
+    return "Upload failed (HTTP " + xhr.status + ")" +
+      (xhr.responseText ? ": " + String(xhr.responseText).slice(0, 200) : ".");
   }
 
   function startUpload() {
@@ -314,28 +334,41 @@
     xhr.open("POST", API_BASE + "/api/jobs" + q);
     xhr.setRequestHeader("X-Invite-Code", invite());
     xhr.setRequestHeader("Content-Type", "application/octet-stream");
+    var sent = 0, total = state.file.size;
     xhr.upload.onprogress = function (e) {
       if (e.lengthComputable) {
+        sent = e.loaded; total = e.total;
         var pct = Math.round(100 * e.loaded / e.total);
         $("up-bar").style.width = pct + "%";
         $("up-pct").textContent = pct + "%";
+        // A big clip can sit at 100% for a while as the server drains it.
+        $("up-file").textContent = state.file.name +
+          (pct >= 100 ? " · finishing up" : "");
       }
     };
-    xhr.onload = function () {
-      state.xhr = null;
-      if (xhr.status === 202) {
-        var jobId = JSON.parse(xhr.responseText).job_id;
-        openJob(jobId);
-      } else {
-        show("upload");
-        $("upload-err").textContent = friendlyHttpError(xhr);
-      }
-    };
-    xhr.onerror = function () {
+    function failed(why) {
+      // Navigating away / cancelling clears state.xhr before aborting — that is
+      // a deliberate cancel, not a failure to report.
+      if (state.xhr !== xhr) return;
       state.xhr = null;
       show("upload");
-      $("upload-err").textContent = friendlyHttpError(xhr);
+      $("upload-err").textContent = friendlyHttpError(xhr, sent, total, why);
+      console.error("[baseline] upload failed", {
+        why: why, status: xhr.status, sent: sent, total: total,
+        response: String(xhr.responseText || "").slice(0, 300)
+      });
+    }
+    xhr.onload = function () {
+      if (xhr.status === 202) {
+        state.xhr = null;
+        openJob(JSON.parse(xhr.responseText).job_id);
+      } else {
+        failed("status");
+      }
     };
+    xhr.onerror = function () { failed("network"); };
+    xhr.ontimeout = function () { failed("timeout"); };
+    xhr.onabort = function () { failed("abort"); };
     xhr.send(state.file);
   }
 
