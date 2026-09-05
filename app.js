@@ -320,6 +320,29 @@
 
   function startUpload() {
     if (!state.file) return;
+    // Check the invite and quota first. A POST rejected before its body is
+    // read closes the socket mid-upload, so without this a wrong code shows up
+    // as "connection dropped" partway through the file.
+    fetch(API_BASE + "/api/preflight", { headers: { "X-Invite-Code": invite() } })
+      .then(function (r) {
+        if (r.ok) return null;
+        return r.json().catch(function () { return null; }).then(function (b) {
+          var msg = (b && b.detail && b.detail.message) ||
+                    (r.status === 401 ? "Invite code was rejected." :
+                     "Couldn't start (HTTP " + r.status + ").");
+          throw new Error(msg);
+        });
+      })
+      .then(sendFile)
+      .catch(function (e) {
+        show("upload");
+        $("upload-err").textContent = e && e.message
+          ? e.message
+          : "Couldn't reach the server - check your connection and retry.";
+      });
+  }
+
+  function sendFile() {
     show("uploading");
     $("up-file").textContent = state.file.name;
     $("up-bar").style.width = "0%";

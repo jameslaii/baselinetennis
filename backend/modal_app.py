@@ -160,6 +160,25 @@ def api():
     def health():
         return {"ok": True, "time": _utc_now()}
 
+    def _quota_key() -> str:
+        return f"quota:{datetime.now(timezone.utc).strftime('%Y-%m-%d')}"
+
+    @web.get("/api/preflight")
+    def preflight(x_invite_code: str | None = Header(default=None)):
+        """Check the invite and quota BEFORE the client sends a video.
+
+        Rejecting a POST before its body is read makes the ASGI server close
+        the socket mid-upload, so the browser reports a bodyless network error
+        and a wrong invite code surfaces as "connection dropped". A GET with no
+        body always answers cleanly, so the client asks here first.
+        """
+        check_invite(x_invite_code)
+        used = jobs.get(_quota_key()) or 0
+        if used >= DAILY_JOB_CAP:
+            raise HTTPException(429, detail={"code": "daily_cap",
+                                             "message": "Today's analysis quota is used up - try tomorrow."})
+        return {"ok": True, "used": used, "cap": DAILY_JOB_CAP}
+
     @web.post("/api/jobs", status_code=202)
     async def create_job(
         request: Request,
@@ -169,29 +188,45 @@ def api():
         view: str = Query("back"),
         x_invite_code: str | None = Header(default=None),
     ):
-        check_invite(x_invite_code)
+        # Any rejection raised BEFORE the request body is consumed makes the
+        # ASGI server close the socket while the browser is still uploading.
+        # The browser then sees a bodyless network error with no status, so a
+        # wrong invite code reads as "connection dropped at 11%" — which is
+        # exactly how this shipped. Draining the body first lets the client
+        # finish sending and actually read the real answer. Clients should call
+        # GET /api/preflight to avoid paying for the upload at all.
+        async def reject(status: int, detail: dict):
+            try:
+                async for _ in request.stream():
+                    pass
+            except Exception:  # noqa: BLE001
+                pass
+            raise HTTPException(status, detail=detail)
+
+        if not x_invite_code or not hmac.compare_digest(
+                x_invite_code.strip(), os.environ["INVITE_CODE"]):
+            await reject(401, {"code": "bad_invite", "message": "Invite code missing or wrong."})
         if handedness not in ("left", "right"):
-            raise HTTPException(422, detail={"code": "bad_param", "message": "handedness must be left or right"})
+            await reject(422, {"code": "bad_param", "message": "handedness must be left or right"})
         if stroke not in ("forehand", "backhand"):
-            raise HTTPException(422, detail={"code": "bad_param", "message": "stroke must be forehand or backhand"})
+            await reject(422, {"code": "bad_param", "message": "stroke must be forehand or backhand"})
         # Declared by the user, not detected — see grading.VIEWS for why.
         # Defaults to "back", which is what the filming guide asks for.
         if view not in BENCH_VIEWS:
-            raise HTTPException(422, detail={"code": "bad_param",
-                                             "message": "view must be back, side or front"})
+            await reject(422, {"code": "bad_param",
+                               "message": "view must be back, side or front"})
         if benchmark not in BENCHMARKS:
-            raise HTTPException(422, detail={"code": "bad_param", "message": "benchmark must be alcaraz or eala"})
+            await reject(422, {"code": "bad_param", "message": "benchmark must be alcaraz or eala"})
 
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        quota_key = f"quota:{today}"
+        quota_key = _quota_key()
         if (jobs.get(quota_key) or 0) >= DAILY_JOB_CAP:
-            raise HTTPException(429, detail={"code": "daily_cap",
-                                             "message": "Today's analysis quota is used up - try tomorrow."})
+            await reject(429, {"code": "daily_cap",
+                               "message": "Today's analysis quota is used up - try tomorrow."})
 
         clen = request.headers.get("content-length")
         if clen and int(clen) > MAX_BYTES:
-            raise HTTPException(413, detail={"code": "too_big",
-                                             "message": "Video is over 500 MB. Export at 1080p and retry."})
+            await reject(413, {"code": "too_big",
+                               "message": "Video is over 500 MB. Export at 1080p and retry."})
 
         job_id = uuid.uuid4().hex
         jobdir = _job_dir(job_id)
