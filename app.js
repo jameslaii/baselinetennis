@@ -187,6 +187,28 @@
     setFile(f);
   });
 
+  // Drag-and-drop. Without the window-level handlers a file dropped anywhere
+  // makes the browser navigate away from the app and lose the session.
+  ["dragenter", "dragover"].forEach(function (ev) {
+    drop.addEventListener(ev, function (e) {
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "copy";
+      drop.classList.add("over");
+    });
+  });
+  ["dragleave", "dragend"].forEach(function (ev) {
+    drop.addEventListener(ev, function () { drop.classList.remove("over"); });
+  });
+  drop.addEventListener("drop", function (e) {
+    e.preventDefault();
+    drop.classList.remove("over");
+    var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) setFile(f);
+  });
+  ["dragover", "drop"].forEach(function (ev) {
+    window.addEventListener(ev, function (e) { e.preventDefault(); });
+  });
+
   function setFile(f) {
     $("upload-err").textContent = "";
     state.file = null;
@@ -403,7 +425,9 @@
     var strokeName = res.params.stroke.charAt(0).toUpperCase() + res.params.stroke.slice(1);
 
     $("rp-eyebrow").textContent = "Session Report · " + (res.created_at || "").slice(0, 10);
-    $("rp-title").textContent = strokeName + " vs " + res.benchmark.display;
+    $("rp-title").textContent = res.benchmark.wing_matched === false
+      ? strokeName + " Report"
+      : strokeName + " vs " + res.benchmark.display;
     $("rp-verdict").textContent = agg.verdict.label;
     var verdictSub = agg.good_hand_path + " of " + agg.n +
       " graded swings rated GOOD on hand path";
@@ -496,8 +520,12 @@
     $("rp-leg").innerHTML = ll.loaded + "/" + agg.n + " <small>loaded</small>";
     if (ll.avg_knee_deg != null) {
       $("rp-dial-knee").textContent = Math.round(ll.avg_knee_deg) + "°";
+      // Only credit the pro when the benchmark was measured on THIS wing —
+      // a forehand knee mean is not a backhand benchmark.
       $("rp-leg-vs").textContent = "you " + Math.round(ll.avg_knee_deg) + "° · " +
-        res.benchmark.display.split(" ").slice(-1)[0] + " " + Math.round(ll.ref_knee_deg) + "°";
+        (ll.ref_matched === false
+          ? "loaded under " + Math.round(ll.ref_knee_deg + 12) + "°"
+          : res.benchmark.display.split(" ").slice(-1)[0] + " " + Math.round(ll.ref_knee_deg) + "°");
       // dial arc: fuller = more knee bend (lower angle). 180° extended -> 0%, 120° deep -> 100%.
       var frac = Math.max(0.05, Math.min(1, (180 - ll.avg_knee_deg) / 60));
       $("rp-dial-arc").setAttribute("stroke-dasharray", Math.round(frac * 100) + " 100");

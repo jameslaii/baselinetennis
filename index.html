@@ -248,6 +248,7 @@
   .file-drop .big { font-size: 14px; font-weight: 600; color: var(--ivory); }
   .file-drop .small { font-size: 11px; color: var(--muted); margin-top: 4px; }
   .file-drop.has { border-style: solid; background: rgba(61, 220, 132, 0.05); border-color: rgba(61, 220, 132, 0.5); }
+  .file-drop.over { border-color: var(--amber); background: rgba(255, 184, 77, 0.09); }
   .file-meta { font-family: var(--mono); font-size: 10.5px; color: var(--amber); margin-top: 6px; word-break: break-all; font-variant-numeric: tabular-nums; }
 
   .field { margin-top: 18px; }
@@ -536,9 +537,10 @@
 
     <div class="file-drop" id="file-drop" tabindex="0" role="button" aria-label="Choose a video">
       <div class="big" id="file-cta">Choose a video</div>
-      <div class="small">MP4 / MOV · up to 4 minutes · under ~300 MB</div>
+      <div class="small">MP4 / MOV · drag one in or tap · up to 4 min · 500 MB max</div>
       <div class="file-meta" id="file-meta"></div>
-      <input id="file-input" type="file" accept="video/*" hidden>
+      <input id="file-input" type="file"
+             accept="video/*,.mov,.MOV,.mp4,.MP4,.m4v,.M4V,.avi,.mkv,.webm" hidden>
     </div>
 
     <div class="field">

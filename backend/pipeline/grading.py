@@ -32,6 +32,14 @@ SNAP_SEC_TIGHT = 0.1
 
 REF_NAME = "Alcaraz"
 REF_KNEE = 135.0
+REF_WING = "forehand"        # the wing REF_KNEE was actually measured on
+REF_MATCHED = True           # False => REF_KNEE is the generic threshold below,
+                             #          NOT this pro's number for this wing
+GENERIC_LOADED_KNEE = 135.0  # coaching guideline used when no wing-matched pro
+                             # reference exists; deliberately the same figure the
+                             # measured forehand benchmarks cluster at (Alcaraz
+                             # 134.8, Eala 133.9) so verdicts stay stable — what
+                             # changes is that we stop crediting it to the pro
 LOAD_MARGIN = 12             # knee <= ref + margin counts as LOADED
 
 LTH = (0.45, 0.32); DROP = (0.28, 0.18); FIN = (0.03, -0.05)
@@ -189,12 +197,30 @@ def load_reference(name: str) -> dict:
         return json.load(fh)
 
 
-def set_reference(name: str, display: str | None = None) -> float:
-    """Point the leg-load benchmark at a pro reference. Returns the knee value."""
-    global REF_NAME, REF_KNEE
+def set_reference(name: str, display: str | None = None,
+                  stroke: str = "forehand") -> float:
+    """Point the leg-load benchmark at a pro reference for THIS wing.
+
+    A forehand and a two-handed backhand are hit from different stances and
+    load the legs differently, so a forehand knee mean is not a backhand
+    benchmark. Neither shipped reference has been measured on a backhand yet
+    (the ball gate verifies 0/145 candidate backhands on the Eala practice
+    clip, so there is no honest way to derive one from that footage).
+
+    When the reference carries no entry for this wing we fall back to a
+    GENERIC coaching threshold and set REF_MATCHED = False — callers must not
+    then attribute the number to the pro.
+    """
+    global REF_NAME, REF_KNEE, REF_WING, REF_MATCHED
     ref = load_reference(name)
     REF_NAME = display or name.capitalize()
-    REF_KNEE = float(ref["forehand_mean"]["knee_flexion"])
+    REF_WING = stroke
+    mean = ref.get(f"{stroke}_mean") or {}
+    knee = mean.get("knee_flexion")
+    if knee is not None:
+        REF_KNEE, REF_MATCHED = float(knee), True
+    else:
+        REF_KNEE, REF_MATCHED = GENERIC_LOADED_KNEE, False
     return REF_KNEE
 
 
@@ -553,6 +579,12 @@ def aggregate(results: list[dict], ref_name: str, ref_knee: float,
                 "avg_knee_deg": round(avg_knee, 1) if avg_knee is not None else None,
                 "ref_knee_deg": round(ref_knee, 1),
                 "delta_deg": round(avg_knee - ref_knee, 1) if avg_knee is not None else None,
+                # False => ref_knee is a generic coaching threshold, not this
+                # pro's number for this wing. Do not label it with their name.
+                "ref_matched": REF_MATCHED,
+                "ref_wing": REF_WING,
+                "ref_label": (f"{ref_name} {round(ref_knee)}°" if REF_MATCHED
+                              else f"loaded under {round(ref_knee + LOAD_MARGIN)}°"),
             },
         },
         "verdict": verdict,

@@ -83,12 +83,46 @@ def _set_status(job_id: str, **updates):
 
 
 def _ffprobe_duration(path: Path) -> float | None:
+    """Length of the VIDEO STREAM — deliberately not the container duration.
+
+    iPhone .MOV files carry Apple `mebx` timed-metadata tracks (and an `apac`
+    spatial-audio track) beside the video. Trimming a clip leaves those metadata
+    tracks holding their ORIGINAL timestamps, and `format=duration` is the max
+    across every track — so a 20s trimmed MOV probes as 562s and gets bounced as
+    "too long". Since we ask users to trim to fit the size cap, that made every
+    trimmed phone clip unuploadable.
+    """
+    def probe(args: list[str]) -> dict[str, str]:
+        out = subprocess.run(["ffprobe", "-v", "error", *args, "-of",
+                              "default=noprint_wrappers=1:nokey=0", str(path)],
+                             capture_output=True, text=True, timeout=60)
+        fields = {}
+        for line in out.stdout.splitlines():
+            key, _, val = line.partition("=")
+            val = val.strip()
+            if val and val != "N/A":
+                fields[key.strip()] = val
+        return fields
+
     try:
-        out = subprocess.run(
-            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
-             "-of", "csv=p=0", str(path)],
-            capture_output=True, text=True, timeout=60)
-        return float(out.stdout.strip())
+        v = probe(["-select_streams", "v:0", "-show_entries",
+                   "stream=duration,nb_frames,r_frame_rate"])
+        if "duration" in v:
+            d = float(v["duration"])
+            if d > 0:
+                return d
+        # Remuxed streams often carry no duration header — derive it from frames.
+        if "nb_frames" in v and "/" in v.get("r_frame_rate", ""):
+            num, den = v["r_frame_rate"].split("/")
+            fps = float(num) / float(den) if float(den) else 0.0
+            if fps > 0:
+                d = float(v["nb_frames"]) / fps
+                if d > 0:
+                    return d
+        # Last resort: container duration. Right for everything except the
+        # Apple-metadata case above, and better than refusing the upload.
+        f = probe(["-show_entries", "format=duration"])
+        return float(f["duration"]) if "duration" in f else None
     except Exception:  # noqa: BLE001
         return None
 
@@ -366,7 +400,13 @@ def analyze(job_id: str, params: dict):
         # ---- 5. heavy re-grade ---------------------------------------------
         stage("grading", 72)
         benchmark = params["benchmark"]
-        ref_knee = grading.set_reference(benchmark, BENCHMARKS[benchmark])
+        ref_knee = grading.set_reference(benchmark, BENCHMARKS[benchmark],
+                                         stroke=params["stroke"])
+        if not grading.REF_MATCHED:
+            warn("no_wing_benchmark",
+                 f"No measured {params['stroke']} benchmark for "
+                 f"{BENCHMARKS[benchmark]} yet - leg load is graded against a "
+                 f"general guideline instead of their numbers.")
         contacts = [s["contact_frame"] for s, _ in selected]
         win = int(grading.WIN_SEC * fps) + 2
         hf, nn, ww = None, data["norm"], data["world"]
@@ -440,7 +480,10 @@ def analyze(job_id: str, params: dict):
             "video": {"duration_s": round(n / fps, 1), "fps": round(fps, 2),
                       "width": W, "height": H, "n_frames": n},
             "benchmark": {"name": benchmark, "display": BENCHMARKS[benchmark],
-                          "knee_flexion_deg": round(ref_knee, 1)},
+                          "knee_flexion_deg": round(ref_knee, 1),
+                          # measured on this wing, or a generic threshold?
+                          "wing": grading.REF_WING,
+                          "wing_matched": grading.REF_MATCHED},
             "quality": {
                 "pose_detect_pct": round(100 * pose_pct, 1),
                 "strokes_detected_total": candidates,
@@ -516,8 +559,12 @@ def render_reel(job_id: str):
                             reel_percent=int(2 + 95 * i / max(1, total)))
 
         bench = results["benchmark"]
+        # Unmatched wing => the number is a general guideline, so don't put the
+        # pro's name next to it on the reel either.
+        ref_name = (bench["display"] if bench.get("wing_matched", True)
+                    else "loaded")
         meta = reel_mod.render(norm_mp4, data, picked, jobdir / "reel.mp4",
-                               stroke=params["stroke"], ref_name=bench["display"],
+                               stroke=params["stroke"], ref_name=ref_name,
                                ref_knee=bench["knee_flexion_deg"], cache_tag="heavy",
                                progress_cb=progress)
         vol.commit()
